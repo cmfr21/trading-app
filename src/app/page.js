@@ -27,6 +27,7 @@ function buildEmptyAsset(symbol, enabled = true) {
     rr: 0,
     reason: "En attente d'analyse.",
     lastAlert: "Aucune",
+    signalSignature: "",
     confluence: {
       longWeight: 0,
       shortWeight: 0,
@@ -36,7 +37,8 @@ function buildEmptyAsset(symbol, enabled = true) {
       ema20: 0,
       ema50: 0,
       atr: 0,
-      rsi: 0
+      rsi: 0,
+      ichimoku: {}
     },
     timeframes: {}
   };
@@ -95,6 +97,18 @@ function safeAssetsFromStorage() {
   } catch {
     return DEFAULT_ASSETS.map((a) => buildEmptyAsset(a.symbol, a.enabled));
   }
+}
+
+function buildSignalSignature(item) {
+  return [
+    item.symbol,
+    item.decision,
+    item.timeframes?.["15m"]?.direction || "NEUTRAL",
+    item.timeframes?.["1h"]?.direction || "NEUTRAL",
+    item.timeframes?.["4h"]?.direction || "NEUTRAL",
+    item.timeframes?.["1d"]?.direction || "NEUTRAL",
+    item.timeframes?.["1w"]?.direction || "NEUTRAL"
+  ].join("|");
 }
 
 export default function Page() {
@@ -185,10 +199,14 @@ export default function Page() {
         if (item.decision === "NO_TRADE") continue;
         if (!alertsEnabled) continue;
 
-        const now = Date.now();
-        const last = alertCache.current[item.symbol];
+        const signature = buildSignalSignature(item);
+        const previous = alertCache.current[item.symbol];
 
-        if (last && now - last < 30 * 60 * 1000) continue;
+        const changedSignal = !previous || previous.signature !== signature;
+        const enoughTimePassed =
+          !previous || Date.now() - previous.sentAt > 60 * 60 * 1000;
+
+        if (!changedSignal && !enoughTimePassed) continue;
 
         await fetch("/api/alerts/test", {
           method: "POST",
@@ -207,7 +225,10 @@ export default function Page() {
           })
         });
 
-        alertCache.current[item.symbol] = now;
+        alertCache.current[item.symbol] = {
+          signature,
+          sentAt: Date.now()
+        };
       }
 
       const map = new Map(data.items.map((item) => [item.symbol, item]));
@@ -240,7 +261,8 @@ export default function Page() {
             reason: live.reason,
             indicators: live.indicators || asset.indicators,
             timeframes: live.timeframes || {},
-            confluence: live.confluence || asset.confluence
+            confluence: live.confluence || asset.confluence,
+            signalSignature: buildSignalSignature(live)
           };
         })
       );
@@ -372,8 +394,8 @@ export default function Page() {
             <div className="pill">Trading Signal Control Center</div>
             <h1>Scanner crypto à confluence multi-timeframe</h1>
             <p>
-              Confluence sur 15m, 1h, 4h, 1d et 1w. Les horizons élevés donnent
-              le biais, le 15m sert de confirmation et de timing.
+              Bougies clôturées uniquement, Ichimoku + EMA + RSI + ATR, et alertes
+              automatiques uniquement en cas de changement réel du signal.
             </p>
           </div>
 
@@ -535,7 +557,7 @@ export default function Page() {
           <section className="panel">
             <h2>{selectedAsset?.symbol || "Aucun actif"}</h2>
             <p className="muted">
-              Biais global construit avec la confluence 15m / 1h / 4h / 1d / 1w.
+              Confluence 15m / 1h / 4h / 1d / 1w avec validation Ichimoku.
             </p>
 
             <div className="details-grid">
@@ -672,13 +694,25 @@ export default function Page() {
                       </div>
                       <div>{formatPrice(tfData?.ema50)}</div>
                       <div className="small-label" style={{ marginTop: 8 }}>
-                        ATR
-                      </div>
-                      <div>{formatPrice(tfData?.atr)}</div>
-                      <div className="small-label" style={{ marginTop: 8 }}>
                         RSI
                       </div>
                       <div>{formatPrice(tfData?.rsi)}</div>
+                      <div className="small-label" style={{ marginTop: 8 }}>
+                        Tenkan
+                      </div>
+                      <div>{formatPrice(tfData?.ichimoku?.tenkan)}</div>
+                      <div className="small-label" style={{ marginTop: 8 }}>
+                        Kijun
+                      </div>
+                      <div>{formatPrice(tfData?.ichimoku?.kijun)}</div>
+                      <div className="small-label" style={{ marginTop: 8 }}>
+                        Cloud Top
+                      </div>
+                      <div>{formatPrice(tfData?.ichimoku?.cloudTop)}</div>
+                      <div className="small-label" style={{ marginTop: 8 }}>
+                        Cloud Bottom
+                      </div>
+                      <div>{formatPrice(tfData?.ichimoku?.cloudBottom)}</div>
                     </div>
                   );
                 })}
