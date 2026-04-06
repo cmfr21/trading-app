@@ -45,7 +45,11 @@ function buildEmptyAsset(symbol, enabled = true) {
 }
 
 function formatPrice(value) {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+  if (
+    value === null ||
+    value === undefined ||
+    Number.isNaN(Number(value))
+  ) {
     return "-";
   }
 
@@ -57,7 +61,11 @@ function formatPrice(value) {
 }
 
 function formatPercent(value) {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+  if (
+    value === null ||
+    value === undefined ||
+    Number.isNaN(Number(value))
+  ) {
     return "-";
   }
   const n = Number(value);
@@ -109,6 +117,18 @@ function buildSignalSignature(item) {
     item.timeframes?.["1d"]?.direction || "NEUTRAL",
     item.timeframes?.["1w"]?.direction || "NEUTRAL"
   ].join("|");
+}
+
+function hasIchimoku(tfData) {
+  return Boolean(
+    tfData?.ichimoku &&
+      (
+        tfData.ichimoku.tenkan !== undefined ||
+        tfData.ichimoku.kijun !== undefined ||
+        tfData.ichimoku.cloudTop !== undefined ||
+        tfData.ichimoku.cloudBottom !== undefined
+      )
+  );
 }
 
 export default function Page() {
@@ -394,7 +414,7 @@ export default function Page() {
             <div className="pill">Trading Signal Control Center</div>
             <h1>Scanner crypto à confluence multi-timeframe</h1>
             <p>
-              Bougies clôturées uniquement, Ichimoku + EMA + RSI + ATR, et alertes
+              Bougies clôturées, Ichimoku + EMA + RSI + ATR, et alertes
               automatiques uniquement en cas de changement réel du signal.
             </p>
           </div>
@@ -674,6 +694,8 @@ export default function Page() {
               <div className="details-grid">
                 {DISPLAY_TFS.map((tf) => {
                   const tfData = selectedAsset?.timeframes?.[tf];
+                  const ichiExists = hasIchimoku(tfData);
+
                   return (
                     <div className="detail-card" key={tf}>
                       <div className="small-label">{tf}</div>
@@ -687,32 +709,47 @@ export default function Page() {
                       >
                         {tfDirectionLabel(tfData?.direction)}
                       </div>
+
                       <div className="small-label">EMA20</div>
                       <div>{formatPrice(tfData?.ema20)}</div>
+
                       <div className="small-label" style={{ marginTop: 8 }}>
                         EMA50
                       </div>
                       <div>{formatPrice(tfData?.ema50)}</div>
+
                       <div className="small-label" style={{ marginTop: 8 }}>
                         RSI
                       </div>
                       <div>{formatPrice(tfData?.rsi)}</div>
-                      <div className="small-label" style={{ marginTop: 8 }}>
-                        Tenkan
-                      </div>
-                      <div>{formatPrice(tfData?.ichimoku?.tenkan)}</div>
-                      <div className="small-label" style={{ marginTop: 8 }}>
-                        Kijun
-                      </div>
-                      <div>{formatPrice(tfData?.ichimoku?.kijun)}</div>
-                      <div className="small-label" style={{ marginTop: 8 }}>
-                        Cloud Top
-                      </div>
-                      <div>{formatPrice(tfData?.ichimoku?.cloudTop)}</div>
-                      <div className="small-label" style={{ marginTop: 8 }}>
-                        Cloud Bottom
-                      </div>
-                      <div>{formatPrice(tfData?.ichimoku?.cloudBottom)}</div>
+
+                      {ichiExists ? (
+                        <>
+                          <div className="small-label" style={{ marginTop: 8 }}>
+                            Tenkan
+                          </div>
+                          <div>{formatPrice(tfData?.ichimoku?.tenkan)}</div>
+
+                          <div className="small-label" style={{ marginTop: 8 }}>
+                            Kijun
+                          </div>
+                          <div>{formatPrice(tfData?.ichimoku?.kijun)}</div>
+
+                          <div className="small-label" style={{ marginTop: 8 }}>
+                            Cloud Top
+                          </div>
+                          <div>{formatPrice(tfData?.ichimoku?.cloudTop)}</div>
+
+                          <div className="small-label" style={{ marginTop: 8 }}>
+                            Cloud Bottom
+                          </div>
+                          <div>{formatPrice(tfData?.ichimoku?.cloudBottom)}</div>
+                        </>
+                      ) : (
+                        <div style={{ marginTop: 10, color: "#94a3b8", fontSize: 12 }}>
+                          Ichimoku indisponible sur ce timeframe
+                        </div>
+                      )}
                     </div>
                   );
                 })}
