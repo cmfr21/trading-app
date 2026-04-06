@@ -3,17 +3,18 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 
 const DEFAULT_ASSETS = [
-  { symbol: "BTCUSDT", enabled: true, timeframe: "15m" },
-  { symbol: "ETHUSDT", enabled: true, timeframe: "15m" },
-  { symbol: "SOLUSDT", enabled: true, timeframe: "15m" },
-  { symbol: "XRPUSDT", enabled: true, timeframe: "15m" }
+  { symbol: "BTCUSDT", enabled: true },
+  { symbol: "ETHUSDT", enabled: true },
+  { symbol: "SOLUSDT", enabled: true },
+  { symbol: "XRPUSDT", enabled: true }
 ];
 
-function buildEmptyAsset(symbol, timeframe = "15m", enabled = true) {
+const DISPLAY_TFS = ["15m", "1h", "4h", "1d", "1w"];
+
+function buildEmptyAsset(symbol, enabled = true) {
   return {
     symbol,
     enabled,
-    timeframe,
     price: 0,
     change24h: 0,
     decision: "NO_TRADE",
@@ -26,18 +27,39 @@ function buildEmptyAsset(symbol, timeframe = "15m", enabled = true) {
     rr: 0,
     reason: "En attente d'analyse.",
     lastAlert: "Aucune",
+    confluence: {
+      longWeight: 0,
+      shortWeight: 0,
+      neutralWeight: 0
+    },
     indicators: {
       ema20: 0,
       ema50: 0,
       atr: 0,
       rsi: 0
-    }
+    },
+    timeframes: {}
   };
 }
 
 function formatPrice(value) {
-  if (!value) return "-";
-  return Number(value).toFixed(2);
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return "-";
+  }
+
+  const n = Number(value);
+
+  return new Intl.NumberFormat("fr-FR", {
+    maximumFractionDigits: n >= 100 ? 2 : n >= 1 ? 4 : 6
+  }).format(n);
+}
+
+function formatPercent(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return "-";
+  }
+  const n = Number(value);
+  return `${n > 0 ? "+" : ""}${n.toFixed(2)}%`;
 }
 
 function decisionLabel(decision) {
@@ -46,37 +68,118 @@ function decisionLabel(decision) {
   return "Neutre";
 }
 
-export default function Page() {
-  const [assets, setAssets] = useState(
-    DEFAULT_ASSETS.map((a) =>
-      buildEmptyAsset(a.symbol, a.timeframe, a.enabled)
-    )
-  );
+function tfDirectionLabel(direction) {
+  if (direction === "LONG") return "Haussier";
+  if (direction === "SHORT") return "Baissier";
+  return "Neutre";
+}
 
+function safeAssetsFromStorage() {
+  if (typeof window === "undefined") {
+    return DEFAULT_ASSETS.map((a) => buildEmptyAsset(a.symbol, a.enabled));
+  }
+
+  try {
+    const raw = window.localStorage.getItem("trading-app-assets");
+    if (!raw) {
+      return DEFAULT_ASSETS.map((a) => buildEmptyAsset(a.symbol, a.enabled));
+    }
+
+    const parsed = JSON.parse(raw);
+
+    if (!Array.isArray(parsed) || !parsed.length) {
+      return DEFAULT_ASSETS.map((a) => buildEmptyAsset(a.symbol, a.enabled));
+    }
+
+    return parsed.map((a) => buildEmptyAsset(a.symbol, a.enabled !== false));
+  } catch {
+    return DEFAULT_ASSETS.map((a) => buildEmptyAsset(a.symbol, a.enabled));
+  }
+}
+
+export default function Page() {
+  const [assets, setAssets] = useState([]);
+  const [selected, setSelected] = useState("BTCUSDT");
+  const [newAsset, setNewAsset] = useState("");
+  const [search, setSearch] = useState("");
   const [alertsEnabled, setAlertsEnabled] = useState(true);
   const [marketLoading, setMarketLoading] = useState(false);
-  const [selected, setSelected] = useState("BTCUSDT");
+  const [marketError, setMarketError] = useState("");
+  const [lastSync, setLastSync] = useState(null);
+  const [sendingAlert, setSendingAlert] = useState(false);
+  const [alertMessage, setAlertMessage] = useState("");
+  const [mounted, setMounted] = useState(false);
 
-  // 🔥 cache anti-spam
   const alertCache = useRef({});
+
+  useEffect(() => {
+    const initial = safeAssetsFromStorage();
+    setAssets(initial);
+    setSelected(initial[0]?.symbol || "BTCUSDT");
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (!mounted) return;
+
+    const slim = assets.map((a) => ({
+      symbol: a.symbol,
+      enabled: a.enabled
+    }));
+
+    window.localStorage.setItem("trading-app-assets", JSON.stringify(slim));
+  }, [assets, mounted]);
+
+  const filteredAssets = useMemo(() => {
+    return assets.filter((a) =>
+      a.symbol.toLowerCase().includes(search.toLowerCase())
+    );
+  }, [assets, search]);
+
+  const selectedAsset = useMemo(() => {
+    return assets.find((a) => a.symbol === selected) || assets[0] || null;
+  }, [assets, selected]);
+
+  const stats = useMemo(() => {
+    const enabled = assets.filter((a) => a.enabled).length;
+    const opportunities = assets.filter(
+      (a) => a.enabled && a.decision !== "NO_TRADE"
+    ).length;
+    const longs = assets.filter((a) => a.enabled && a.decision === "LONG").length;
+    const shorts = assets.filter((a) => a.enabled && a.decision === "SHORT").length;
+    const neutral = assets.filter(
+      (a) => a.enabled && a.decision === "NO_TRADE"
+    ).length;
+
+    return { enabled, opportunities, longs, shorts, neutral };
+  }, [assets]);
 
   async function refreshMarket() {
     try {
       setMarketLoading(true);
+      setMarketError("");
+      setAlertMessage("");
 
-      const symbols = assets
-        .filter((a) => a.enabled)
-        .map((a) => a.symbol)
-        .join(",");
+      const enabledAssets = assets.filter((a) => a.enabled);
 
-      const res = await fetch(`/api/market?symbols=${symbols}`);
+      if (!enabledAssets.length) {
+        setMarketLoading(false);
+        return;
+      }
+
+      const res = await fetch(
+        `/api/market?symbols=${encodeURIComponent(
+          enabledAssets.map((a) => a.symbol).join(",")
+        )}`,
+        { cache: "no-store" }
+      );
+
       const data = await res.json();
 
-      if (!data.ok) throw new Error("Erreur market");
+      if (!res.ok || !data.ok) {
+        throw new Error(data?.error || "Erreur market");
+      }
 
-      const map = new Map(data.items.map((i) => [i.symbol, i]));
-
-      // 🔥 ALERTES AUTO
       for (const item of data.items) {
         if (!item.ok) continue;
         if (item.decision === "NO_TRADE") continue;
@@ -85,96 +188,504 @@ export default function Page() {
         const now = Date.now();
         const last = alertCache.current[item.symbol];
 
-        // cooldown 30 min
         if (last && now - last < 30 * 60 * 1000) continue;
 
         await fetch("/api/alerts/test", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(item)
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            symbol: item.symbol,
+            side: item.decision,
+            entry: item.entry,
+            stopLoss: item.stopLoss,
+            takeProfit: item.takeProfit,
+            leverage: item.leverage,
+            rr: item.rr,
+            reason: item.reason
+          })
         });
 
         alertCache.current[item.symbol] = now;
       }
 
+      const map = new Map(data.items.map((item) => [item.symbol, item]));
+
       setAssets((prev) =>
-        prev.map((a) => {
-          const live = map.get(a.symbol);
-          if (!live || !live.ok) return a;
+        prev.map((asset) => {
+          const live = map.get(asset.symbol);
+          if (!live) return asset;
+
+          if (!live.ok) {
+            return {
+              ...asset,
+              reason: live.error || "Erreur de récupération",
+              decision: "NO_TRADE"
+            };
+          }
 
           return {
-            ...a,
-            ...live
+            ...asset,
+            price: live.price,
+            change24h: live.change24h,
+            decision: live.decision,
+            score: live.score,
+            confidence: live.confidence,
+            entry: live.entry,
+            stopLoss: live.stopLoss,
+            takeProfit: live.takeProfit,
+            leverage: live.leverage,
+            rr: live.rr,
+            reason: live.reason,
+            indicators: live.indicators || asset.indicators,
+            timeframes: live.timeframes || {},
+            confluence: live.confluence || asset.confluence
           };
         })
       );
-    } catch (err) {
-      console.error(err);
+
+      setLastSync(Date.now());
+    } catch (error) {
+      setMarketError(error?.message || "Erreur inconnue");
     } finally {
       setMarketLoading(false);
     }
   }
 
   useEffect(() => {
+    if (!mounted || !assets.length) return;
     refreshMarket();
-    const interval = setInterval(refreshMarket, 20000);
-    return () => clearInterval(interval);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mounted]);
 
-  const selectedAsset =
-    assets.find((a) => a.symbol === selected) || assets[0];
+  useEffect(() => {
+    if (!mounted || !assets.length) return;
+
+    const interval = setInterval(() => {
+      refreshMarket();
+    }, 30000);
+
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mounted, assets.length, alertsEnabled]);
+
+  function addAsset() {
+    const symbol = newAsset.trim().toUpperCase();
+    if (!symbol) return;
+
+    if (!/^[A-Z0-9]{4,20}$/.test(symbol)) {
+      setAlertMessage("Symbole invalide. Exemple : LINKUSDT");
+      return;
+    }
+
+    if (assets.some((a) => a.symbol === symbol)) {
+      setAlertMessage("Cet actif est déjà dans la watchlist.");
+      setNewAsset("");
+      return;
+    }
+
+    const asset = buildEmptyAsset(symbol, true);
+
+    setAssets((prev) => [asset, ...prev]);
+    setSelected(symbol);
+    setNewAsset("");
+    setAlertMessage("Actif ajouté. Clique sur Actualiser les prix.");
+  }
+
+  function removeAsset(symbol) {
+    const next = assets.filter((a) => a.symbol !== symbol);
+    setAssets(next);
+    if (selected === symbol && next.length) {
+      setSelected(next[0].symbol);
+    }
+  }
+
+  function toggleAsset(symbol) {
+    setAssets((prev) =>
+      prev.map((a) =>
+        a.symbol === symbol ? { ...a, enabled: !a.enabled } : a
+      )
+    );
+  }
+
+  async function sendTestAlert() {
+    try {
+      if (!selectedAsset) return;
+
+      setSendingAlert(true);
+      setAlertMessage("");
+
+      const res = await fetch("/api/alerts/test", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          symbol: selectedAsset.symbol,
+          side: selectedAsset.decision,
+          entry: selectedAsset.entry,
+          stopLoss: selectedAsset.stopLoss,
+          takeProfit: selectedAsset.takeProfit,
+          leverage: selectedAsset.leverage,
+          rr: selectedAsset.rr,
+          reason: selectedAsset.reason
+        })
+      });
+
+      const data = await res.json();
+
+      if (!res.ok || !data.ok) {
+        throw new Error(data?.error || "Échec alerte");
+      }
+
+      setAlertMessage("Alerte Telegram envoyée.");
+      setAssets((prev) =>
+        prev.map((a) =>
+          a.symbol === selectedAsset.symbol
+            ? { ...a, lastAlert: "À l'instant" }
+            : a
+        )
+      );
+    } catch (error) {
+      setAlertMessage(error?.message || "Erreur envoi alerte");
+    } finally {
+      setSendingAlert(false);
+    }
+  }
+
+  if (!mounted) {
+    return (
+      <main className="page">
+        <div className="container">
+          <div className="panel">Chargement de l'application...</div>
+        </div>
+      </main>
+    );
+  }
 
   return (
-    <main style={{ padding: 20 }}>
-      <h1>🔥 Trading Scanner</h1>
+    <main className="page">
+      <div className="container">
+        <header className="hero">
+          <div>
+            <div className="pill">Trading Signal Control Center</div>
+            <h1>Scanner crypto à confluence multi-timeframe</h1>
+            <p>
+              Confluence sur 15m, 1h, 4h, 1d et 1w. Les horizons élevés donnent
+              le biais, le 15m sert de confirmation et de timing.
+            </p>
+          </div>
 
-      <button onClick={refreshMarket}>
-        {marketLoading ? "Chargement..." : "Refresh"}
-      </button>
+          <div className="hero-actions">
+            <label className="toggle">
+              <span>Alertes</span>
+              <input
+                type="checkbox"
+                checked={alertsEnabled}
+                onChange={(e) => setAlertsEnabled(e.target.checked)}
+              />
+            </label>
+            <button className="primary-btn" onClick={refreshMarket}>
+              {marketLoading ? "Actualisation..." : "Actualiser les prix"}
+            </button>
+          </div>
+        </header>
 
-      <label style={{ marginLeft: 20 }}>
-        Alerts
-        <input
-          type="checkbox"
-          checked={alertsEnabled}
-          onChange={(e) => setAlertsEnabled(e.target.checked)}
-        />
-      </label>
+        <section className="stats-grid">
+          <div className="stat-card">
+            <div className="stat-label">Actifs surveillés</div>
+            <div className="stat-value">{stats.enabled}</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-label">Opportunités actives</div>
+            <div className="stat-value">{stats.opportunities}</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-label">Longs détectés</div>
+            <div className="stat-value">{stats.longs}</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-label">Shorts détectés</div>
+            <div className="stat-value">{stats.shorts}</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-label">Neutres</div>
+            <div className="stat-value">{stats.neutral}</div>
+          </div>
+        </section>
 
-      <hr />
-
-      <div style={{ display: "flex", gap: 20 }}>
-        {/* LISTE */}
-        <div style={{ width: 300 }}>
-          {assets.map((a) => (
-            <div
-              key={a.symbol}
-              onClick={() => setSelected(a.symbol)}
-              style={{
-                padding: 10,
-                marginBottom: 10,
-                border: "1px solid #333",
-                cursor: "pointer"
-              }}
-            >
-              <b>{a.symbol}</b>
-              <div>{formatPrice(a.price)}</div>
-              <div>{decisionLabel(a.decision)}</div>
+        <section className="status-bar">
+          <div className="status-card">
+            <div className="small-label">Dernière synchro</div>
+            <div className="status-text">
+              {lastSync ? new Date(lastSync).toLocaleString("fr-FR") : "Aucune"}
             </div>
-          ))}
-        </div>
+          </div>
+          <div className="status-card">
+            <div className="small-label">État</div>
+            <div className="status-text">
+              {marketError
+                ? `Erreur : ${marketError}`
+                : alertMessage || "Application prête."}
+            </div>
+          </div>
+        </section>
 
-        {/* DETAIL */}
-        <div>
-          <h2>{selectedAsset.symbol}</h2>
-          <p>Prix: {formatPrice(selectedAsset.price)}</p>
-          <p>Decision: {decisionLabel(selectedAsset.decision)}</p>
-          <p>Entry: {formatPrice(selectedAsset.entry)}</p>
-          <p>SL: {formatPrice(selectedAsset.stopLoss)}</p>
-          <p>TP: {formatPrice(selectedAsset.takeProfit)}</p>
-          <p>RR: {selectedAsset.rr}</p>
-          <p>RSI: {selectedAsset.indicators?.rsi}</p>
-        </div>
+        <section className="main-grid">
+          <aside className="panel">
+            <h2>Watchlist</h2>
+
+            <input
+              className="input"
+              placeholder="Rechercher un actif"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+
+            <div className="add-row">
+              <input
+                className="input"
+                placeholder="Ex: LINKUSDT"
+                value={newAsset}
+                onChange={(e) => setNewAsset(e.target.value)}
+              />
+              <div />
+              <button className="secondary-btn" onClick={addAsset}>
+                Ajouter
+              </button>
+            </div>
+
+            <div className="asset-list">
+              {filteredAssets.map((asset) => (
+                <div
+                  key={asset.symbol}
+                  className={
+                    selected === asset.symbol ? "asset-card selected" : "asset-card"
+                  }
+                  onClick={() => setSelected(asset.symbol)}
+                >
+                  <div className="asset-top">
+                    <div>
+                      <div className="asset-symbol">{asset.symbol}</div>
+                      <div className="asset-meta">Confluence multi-timeframe</div>
+                    </div>
+                    <span className={`badge ${asset.decision.toLowerCase()}`}>
+                      {decisionLabel(asset.decision)}
+                    </span>
+                  </div>
+
+                  <div className="asset-grid">
+                    <div>
+                      <div className="small-label">Prix</div>
+                      <div>{formatPrice(asset.price)}</div>
+                    </div>
+                    <div>
+                      <div className="small-label">24h</div>
+                      <div
+                        className={
+                          asset.change24h > 0
+                            ? "up"
+                            : asset.change24h < 0
+                            ? "down"
+                            : "neutral"
+                        }
+                      >
+                        {formatPercent(asset.change24h)}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="small-label">Score</div>
+                  <div className="progress">
+                    <div
+                      className="progress-bar"
+                      style={{ width: `${asset.score}%` }}
+                    />
+                  </div>
+
+                  <div className="asset-actions">
+                    <label className="mini-toggle">
+                      <span>Actif</span>
+                      <input
+                        type="checkbox"
+                        checked={asset.enabled}
+                        onChange={(e) => {
+                          e.stopPropagation();
+                          toggleAsset(asset.symbol);
+                        }}
+                      />
+                    </label>
+
+                    <button
+                      className="danger-link"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeAsset(asset.symbol);
+                      }}
+                    >
+                      Supprimer
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </aside>
+
+          <section className="panel">
+            <h2>{selectedAsset?.symbol || "Aucun actif"}</h2>
+            <p className="muted">
+              Biais global construit avec la confluence 15m / 1h / 4h / 1d / 1w.
+            </p>
+
+            <div className="details-grid">
+              <div className="detail-card">
+                <div className="small-label">Prix actuel</div>
+                <div className="detail-value">{formatPrice(selectedAsset?.price)}</div>
+              </div>
+              <div className="detail-card">
+                <div className="small-label">Entrée</div>
+                <div className="detail-value">{formatPrice(selectedAsset?.entry)}</div>
+              </div>
+              <div className="detail-card">
+                <div className="small-label">Stop loss</div>
+                <div className="detail-value">{formatPrice(selectedAsset?.stopLoss)}</div>
+              </div>
+              <div className="detail-card">
+                <div className="small-label">Take profit</div>
+                <div className="detail-value">{formatPrice(selectedAsset?.takeProfit)}</div>
+              </div>
+            </div>
+
+            <div className="summary-grid">
+              <div className="summary-card">
+                <h3>Résumé stratégique</h3>
+                <p>{selectedAsset?.reason}</p>
+
+                <div className="metric-block">
+                  <div className="small-label">
+                    Score setup : {selectedAsset?.score || 0}/100
+                  </div>
+                  <div className="progress">
+                    <div
+                      className="progress-bar"
+                      style={{ width: `${selectedAsset?.score || 0}%` }}
+                    />
+                  </div>
+                </div>
+
+                <div className="metric-block">
+                  <div className="small-label">
+                    Confiance : {selectedAsset?.confidence || 0}/100
+                  </div>
+                  <div className="progress">
+                    <div
+                      className="progress-bar"
+                      style={{ width: `${selectedAsset?.confidence || 0}%` }}
+                    />
+                  </div>
+                </div>
+
+                <div className="metric-block">
+                  <div className="small-label">Poids haussier</div>
+                  <div>{selectedAsset?.confluence?.longWeight || 0}</div>
+                </div>
+
+                <div className="metric-block">
+                  <div className="small-label">Poids baissier</div>
+                  <div>{selectedAsset?.confluence?.shortWeight || 0}</div>
+                </div>
+
+                <div className="metric-block">
+                  <div className="small-label">Poids neutre</div>
+                  <div>{selectedAsset?.confluence?.neutralWeight || 0}</div>
+                </div>
+              </div>
+
+              <div className="summary-card">
+                <h3>Verdict</h3>
+                <div className={`verdict ${selectedAsset?.decision.toLowerCase()}`}>
+                  {decisionLabel(selectedAsset?.decision)}
+                </div>
+
+                <div className="info-row">
+                  <span>Levier conseillé</span>
+                  <strong>{selectedAsset?.leverage}</strong>
+                </div>
+                <div className="info-row">
+                  <span>RR estimé</span>
+                  <strong>{selectedAsset?.rr || 0}</strong>
+                </div>
+                <div className="info-row">
+                  <span>Dernière alerte</span>
+                  <strong>{selectedAsset?.lastAlert}</strong>
+                </div>
+
+                <div style={{ marginTop: 16 }}>
+                  <button
+                    className="primary-btn"
+                    onClick={sendTestAlert}
+                    disabled={!alertsEnabled || sendingAlert}
+                    style={{
+                      width: "100%",
+                      opacity: !alertsEnabled || sendingAlert ? 0.6 : 1
+                    }}
+                  >
+                    {sendingAlert ? "Envoi..." : "Envoyer une alerte Telegram"}
+                  </button>
+                </div>
+
+                <div style={{ marginTop: 12 }}>
+                  <button
+                    className="ghost-btn"
+                    onClick={refreshMarket}
+                    style={{ width: "100%" }}
+                  >
+                    Recalculer l'analyse
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div style={{ marginTop: 24 }}>
+              <h3 style={{ marginBottom: 12 }}>Détail par timeframe</h3>
+              <div className="details-grid">
+                {DISPLAY_TFS.map((tf) => {
+                  const tfData = selectedAsset?.timeframes?.[tf];
+                  return (
+                    <div className="detail-card" key={tf}>
+                      <div className="small-label">{tf}</div>
+                      <div
+                        style={{
+                          fontSize: 20,
+                          fontWeight: 700,
+                          marginTop: 6,
+                          marginBottom: 8
+                        }}
+                      >
+                        {tfDirectionLabel(tfData?.direction)}
+                      </div>
+                      <div className="small-label">EMA20</div>
+                      <div>{formatPrice(tfData?.ema20)}</div>
+                      <div className="small-label" style={{ marginTop: 8 }}>
+                        EMA50
+                      </div>
+                      <div>{formatPrice(tfData?.ema50)}</div>
+                      <div className="small-label" style={{ marginTop: 8 }}>
+                        ATR
+                      </div>
+                      <div>{formatPrice(tfData?.atr)}</div>
+                      <div className="small-label" style={{ marginTop: 8 }}>
+                        RSI
+                      </div>
+                      <div>{formatPrice(tfData?.rsi)}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </section>
+        </section>
       </div>
     </main>
   );
