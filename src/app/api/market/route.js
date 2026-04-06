@@ -16,54 +16,99 @@ export async function GET(request) {
     const results = await Promise.all(
       symbols.map(async (symbol) => {
         try {
-          // 🔹 Prix + variation
           const tickerRes = await fetch(
-            `https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=${symbol}`,
+            `https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=${encodeURIComponent(symbol)}`,
             { cache: "no-store" }
           );
 
+          if (!tickerRes.ok) {
+            throw new Error(`Ticker HTTP ${tickerRes.status}`);
+          }
+
           const ticker = await tickerRes.json();
+
+          if (!ticker || typeof ticker !== "object" || !ticker.lastPrice) {
+            throw new Error("Réponse ticker invalide");
+          }
 
           const price = Number(ticker.lastPrice);
           const change24h = Number(ticker.priceChangePercent);
 
-          // 🔹 Bougies
           const klinesRes = await fetch(
-            `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${timeframe}&limit=100`,
+            `https://fapi.binance.com/fapi/v1/klines?symbol=${encodeURIComponent(
+              symbol
+            )}&interval=${encodeURIComponent(timeframe)}&limit=100`,
             { cache: "no-store" }
           );
 
+          if (!klinesRes.ok) {
+            throw new Error(`Klines HTTP ${klinesRes.status}`);
+          }
+
           const klines = await klinesRes.json();
 
-          const closes = klines.map((k) => Number(k[4]));
+          if (!Array.isArray(klines)) {
+            throw new Error(
+              `Klines invalides: ${typeof klines} ${JSON.stringify(klines).slice(0, 200)}`
+            );
+          }
 
-          // 🔹 EMA simple
-          const ema = (period) => {
-            let k = 2 / (period + 1);
-            let ema = closes[0];
-            for (let i = 1; i < closes.length; i++) {
-              ema = closes[i] * k + ema * (1 - k);
+          if (klines.length < 50) {
+            throw new Error("Pas assez de bougies pour analyser");
+          }
+
+          const closes = klines.map((k) => Number(k[4])).filter((v) => Number.isFinite(v));
+
+          if (closes.length < 50) {
+            throw new Error("Clôtures invalides");
+          }
+
+          function ema(period) {
+            const slice = closes.slice(0, period);
+            if (slice.length < period) return null;
+
+            let value = slice.reduce((a, b) => a + b, 0) / period;
+            const k = 2 / (period + 1);
+
+            for (let i = period; i < closes.length; i += 1) {
+              value = closes[i] * k + value * (1 - k);
             }
-            return ema;
-          };
+
+            return value;
+          }
+
+          function calcRsi(period = 14) {
+            if (closes.length < period + 1) return null;
+
+            let gains = 0;
+            let losses = 0;
+
+            for (let i = closes.length - period; i < closes.length; i += 1) {
+              const prev = closes[i - 1];
+              const curr = closes[i];
+              const diff = curr - prev;
+
+              if (diff >= 0) gains += diff;
+              else losses += Math.abs(diff);
+            }
+
+            const avgGain = gains / period;
+            const avgLoss = losses / period;
+
+            if (avgLoss === 0) return 100;
+
+            const rs = avgGain / avgLoss;
+            return 100 - 100 / (1 + rs);
+          }
 
           const ema20 = ema(20);
           const ema50 = ema(50);
+          const rsi = calcRsi(14);
 
-          // 🔹 RSI simple
-          let gains = 0;
-          let losses = 0;
-
-          for (let i = 1; i < closes.length; i++) {
-            const diff = closes[i] - closes[i - 1];
-            if (diff >= 0) gains += diff;
-            else losses += Math.abs(diff);
+          if (!ema20 || !ema50 || !rsi) {
+            throw new Error("Indicateurs impossibles à calculer");
           }
 
-          const rs = gains / (losses || 1);
-          const rsi = 100 - 100 / (1 + rs);
-
-          // 🔹 Analyse SIMPLE mais réelle
           let decision = "NO_TRADE";
           let entry = price;
           let stopLoss = 0;
@@ -80,11 +125,9 @@ export async function GET(request) {
             if (rr >= 1.5) {
               decision = "LONG";
               leverage = "x2";
-              reason = "Tendance haussière EMA + RSI correct";
+              reason = "Tendance haussière EMA20/EMA50 + RSI correct";
             }
-          }
-
-          if (price < ema20 && ema20 < ema50 && rsi > 30) {
+          } else if (price < ema20 && ema20 < ema50 && rsi > 30) {
             stopLoss = price * 1.015;
             takeProfit = price * 0.97;
             rr = (price - takeProfit) / (stopLoss - price);
@@ -92,7 +135,7 @@ export async function GET(request) {
             if (rr >= 1.5) {
               decision = "SHORT";
               leverage = "x2";
-              reason = "Tendance baissière EMA + RSI correct";
+              reason = "Tendance baissière EMA20/EMA50 + RSI correct";
             }
           }
 
@@ -102,16 +145,16 @@ export async function GET(request) {
             price,
             change24h,
             decision,
-            entry,
-            stopLoss,
-            takeProfit,
+            entry: Number(entry.toFixed(4)),
+            stopLoss: Number(stopLoss.toFixed(4)),
+            takeProfit: Number(takeProfit.toFixed(4)),
             rr: Number(rr.toFixed(2)),
             leverage,
             reason,
             indicators: {
-              ema20,
-              ema50,
-              rsi
+              ema20: Number(ema20.toFixed(4)),
+              ema50: Number(ema50.toFixed(4)),
+              rsi: Number(rsi.toFixed(2))
             }
           };
         } catch (err) {
