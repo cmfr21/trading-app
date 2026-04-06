@@ -16,22 +16,24 @@ export async function POST(request) {
     const body = await request.json().catch(() => ({}));
 
     const symbol = body.symbol || "BTCUSDT";
-    const side = body.side || "LONG";
+    const side = body.side || "NO_TRADE";
     const entry = body.entry ?? "-";
     const stopLoss = body.stopLoss ?? "-";
     const takeProfit = body.takeProfit ?? "-";
     const leverage = body.leverage ?? "-";
     const rr = body.rr ?? "-";
+    const reason = body.reason || "Signal généré depuis l'application.";
 
     const text =
-      `🚨 Signal test\n\n` +
+      `🚨 Signal trading\n\n` +
       `Actif: ${symbol}\n` +
       `Sens: ${side}\n` +
       `Entrée: ${entry}\n` +
       `Stop loss: ${stopLoss}\n` +
       `Take profit: ${takeProfit}\n` +
       `Levier: ${leverage}\n` +
-      `RR: ${rr}`;
+      `RR: ${rr}\n` +
+      `Raison: ${reason}`;
 
     const telegramRes = await fetch(
       `https://api.telegram.org/bot${token}/sendMessage`,
@@ -62,7 +64,7 @@ export async function POST(request) {
 
     return Response.json({
       ok: true,
-      message: "Alerte test envoyée."
+      message: "Alerte envoyée."
     });
   } catch (error) {
     return Response.json(
