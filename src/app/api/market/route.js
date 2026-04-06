@@ -17,7 +17,7 @@ export async function GET(request) {
       symbols.map(async (symbol) => {
         try {
           const tickerRes = await fetch(
-            `https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=${encodeURIComponent(symbol)}`,
+            `https://api.binance.com/api/v3/ticker/24hr?symbol=${encodeURIComponent(symbol)}`,
             { cache: "no-store" }
           );
 
@@ -35,7 +35,7 @@ export async function GET(request) {
           const change24h = Number(ticker.priceChangePercent);
 
           const klinesRes = await fetch(
-            `https://fapi.binance.com/fapi/v1/klines?symbol=${encodeURIComponent(
+            `https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(
               symbol
             )}&interval=${encodeURIComponent(timeframe)}&limit=100`,
             { cache: "no-store" }
@@ -57,7 +57,9 @@ export async function GET(request) {
             throw new Error("Pas assez de bougies pour analyser");
           }
 
-          const closes = klines.map((k) => Number(k[4])).filter((v) => Number.isFinite(v));
+          const closes = klines
+            .map((k) => Number(k[4]))
+            .filter((v) => Number.isFinite(v));
 
           if (closes.length < 50) {
             throw new Error("Clôtures invalides");
