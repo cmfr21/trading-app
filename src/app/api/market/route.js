@@ -1,3 +1,13 @@
+const ANALYSIS_TFS = ["15m", "1h", "4h", "1d", "1w"];
+
+const TF_WEIGHTS = {
+  "15m": 1,
+  "1h": 2,
+  "4h": 3,
+  "1d": 4,
+  "1w": 5
+};
+
 function calcEma(values, period) {
   if (!values.length || values.length < period) return null;
 
@@ -71,94 +81,6 @@ function calcAtr(candles, period = 14) {
   return atr;
 }
 
-function analyzeAsset({ price, change24h, candles }) {
-  const closes = candles.map((c) => Number(c.close));
-  const ema20 = calcEma(closes, 20);
-  const ema50 = calcEma(closes, 50);
-  const atr = calcAtr(candles, 14);
-  const rsi = calcRsi(closes, 14);
-
-  if (!ema20 || !ema50 || !atr || !rsi) {
-    return {
-      decision: "NO_TRADE",
-      score: 0,
-      confidence: 0,
-      entry: 0,
-      stopLoss: 0,
-      takeProfit: 0,
-      leverage: "-",
-      rr: 0,
-      reason: "Données insuffisantes pour l'analyse.",
-      indicators: { ema20, ema50, atr, rsi }
-    };
-  }
-
-  const bullishTrend = price > ema20 && ema20 > ema50;
-  const bearishTrend = price < ema20 && ema20 < ema50;
-
-  let decision = "NO_TRADE";
-  let entry = price;
-  let stopLoss = 0;
-  let takeProfit = 0;
-  let rr = 0;
-  let reason = "Aucune configuration exploitable.";
-  let score = 45;
-  let confidence = 42;
-  let leverage = "-";
-
-  if (bullishTrend && rsi >= 52 && rsi <= 68) {
-    stopLoss = price - atr * 1.2;
-    takeProfit = price + atr * 2.4;
-    rr = (takeProfit - entry) / (entry - stopLoss);
-    decision = rr >= 1.8 ? "LONG" : "NO_TRADE";
-    reason =
-      decision === "LONG"
-        ? "Tendance haussière alignée EMA20/EMA50 avec RSI sain."
-        : "Biais haussier mais ratio risque/rendement insuffisant.";
-    score = decision === "LONG" ? 78 : 54;
-    confidence = decision === "LONG" ? 72 : 48;
-    leverage = decision === "LONG" ? "x2" : "-";
-  } else if (bearishTrend && rsi >= 32 && rsi <= 48) {
-    stopLoss = price + atr * 1.2;
-    takeProfit = price - atr * 2.4;
-    rr = (entry - takeProfit) / (stopLoss - entry);
-    decision = rr >= 1.8 ? "SHORT" : "NO_TRADE";
-    reason =
-      decision === "SHORT"
-        ? "Tendance baissière alignée EMA20/EMA50 avec RSI compatible."
-        : "Biais baissier mais ratio risque/rendement insuffisant.";
-    score = decision === "SHORT" ? 78 : 54;
-    confidence = decision === "SHORT" ? 72 : 48;
-    leverage = decision === "SHORT" ? "x2" : "-";
-  } else {
-    if (Math.abs(change24h) < 1) {
-      reason = "Marché trop neutre pour se positionner.";
-    } else if (rsi > 68 || rsi < 32) {
-      reason = "Actif trop étendu, meilleur de ne pas courir après le mouvement.";
-    } else {
-      reason = "Tendance et momentum non alignés.";
-    }
-  }
-
-  return {
-    decision,
-    score,
-    confidence,
-    entry: Number(entry.toFixed(6)),
-    stopLoss: Number(stopLoss.toFixed(6)),
-    takeProfit: Number(takeProfit.toFixed(6)),
-    leverage,
-    rr: Number(rr.toFixed(2)),
-    reason,
-    indicators: {
-      ema20: Number(ema20.toFixed(6)),
-      ema50: Number(ema50.toFixed(6)),
-      atr: Number(atr.toFixed(6)),
-      rsi: Number(rsi.toFixed(2))
-    }
-  };
-}
-
 function mapToKrakenPair(symbol) {
   const clean = symbol.toUpperCase();
 
@@ -200,13 +122,11 @@ function mapToKrakenPair(symbol) {
 
 function timeframeToKrakenInterval(timeframe) {
   const map = {
-    "1m": 1,
-    "5m": 5,
     "15m": 15,
-    "30m": 30,
     "1h": 60,
     "4h": 240,
-    "1d": 1440
+    "1d": 1440,
+    "1w": 10080
   };
 
   return map[timeframe] || 15;
@@ -236,7 +156,7 @@ async function fetchTicker(krakenPair) {
   return data.result[firstKey];
 }
 
-async function fetchKlines(krakenPair, timeframe = "15m") {
+async function fetchKlines(krakenPair, timeframe) {
   const interval = timeframeToKrakenInterval(timeframe);
 
   const res = await fetch(
@@ -269,11 +189,159 @@ async function fetchKlines(krakenPair, timeframe = "15m") {
   }));
 }
 
+function analyzeSingleTimeframe(candles) {
+  const closes = candles.map((c) => Number(c.close));
+  const ema20 = calcEma(closes, 20);
+  const ema50 = calcEma(closes, 50);
+  const atr = calcAtr(candles, 14);
+  const rsi = calcRsi(closes, 14);
+  const price = closes[closes.length - 1];
+
+  if (!price || !ema20 || !ema50 || !atr || !rsi) {
+    return {
+      direction: "NEUTRAL",
+      price: price || 0,
+      ema20: ema20 || 0,
+      ema50: ema50 || 0,
+      atr: atr || 0,
+      rsi: rsi || 0,
+      score: 0
+    };
+  }
+
+  const bullish = price > ema20 && ema20 > ema50;
+  const bearish = price < ema20 && ema20 < ema50;
+
+  let direction = "NEUTRAL";
+  let score = 40;
+
+  if (bullish && rsi >= 50 && rsi <= 70) {
+    direction = "LONG";
+    score = 70;
+    if (rsi >= 54 && rsi <= 64) score += 8;
+  } else if (bearish && rsi >= 30 && rsi <= 50) {
+    direction = "SHORT";
+    score = 70;
+    if (rsi >= 36 && rsi <= 46) score += 8;
+  } else {
+    if (rsi > 70 || rsi < 30) score = 35;
+    else score = 45;
+  }
+
+  return {
+    direction,
+    price,
+    ema20,
+    ema50,
+    atr,
+    rsi,
+    score
+  };
+}
+
+function buildConfluenceDecision(price, change24h, byTf) {
+  const longWeight = ANALYSIS_TFS
+    .filter((tf) => byTf[tf]?.direction === "LONG")
+    .reduce((sum, tf) => sum + TF_WEIGHTS[tf], 0);
+
+  const shortWeight = ANALYSIS_TFS
+    .filter((tf) => byTf[tf]?.direction === "SHORT")
+    .reduce((sum, tf) => sum + TF_WEIGHTS[tf], 0);
+
+  const neutralWeight = ANALYSIS_TFS
+    .filter((tf) => byTf[tf]?.direction === "NEUTRAL")
+    .reduce((sum, tf) => sum + TF_WEIGHTS[tf], 0);
+
+  const h1 = byTf["1h"]?.direction;
+  const h4 = byTf["4h"]?.direction;
+  const d1 = byTf["1d"]?.direction;
+  const w1 = byTf["1w"]?.direction;
+  const m15 = byTf["15m"]?.direction;
+
+  const atrRef = byTf["1h"]?.atr || byTf["4h"]?.atr || price * 0.01;
+
+  let decision = "NO_TRADE";
+  let reason = "Confluence insuffisante entre les timeframes.";
+  let score = Math.max(longWeight, shortWeight) * 6;
+  let confidence = Math.max(longWeight, shortWeight) * 5;
+  let leverage = "-";
+  let entry = price;
+  let stopLoss = 0;
+  let takeProfit = 0;
+  let rr = 0;
+
+  const strongLong =
+    h1 === "LONG" &&
+    h4 === "LONG" &&
+    d1 === "LONG" &&
+    w1 !== "SHORT" &&
+    m15 !== "SHORT" &&
+    longWeight >= 10 &&
+    shortWeight <= 1;
+
+  const strongShort =
+    h1 === "SHORT" &&
+    h4 === "SHORT" &&
+    d1 === "SHORT" &&
+    w1 !== "LONG" &&
+    m15 !== "LONG" &&
+    shortWeight >= 10 &&
+    longWeight <= 1;
+
+  if (strongLong) {
+    decision = "LONG";
+    stopLoss = price - atrRef * 1.2;
+    takeProfit = price + atrRef * 2.4;
+    rr = (takeProfit - entry) / (entry - stopLoss);
+    reason =
+      "Confluence haussière validée sur 1h, 4h et 1d, avec 15m non contradictoire.";
+    score = Math.min(92, 72 + longWeight * 2);
+    confidence = Math.min(90, 68 + longWeight * 2);
+    leverage = w1 === "LONG" ? "x2" : "x1";
+  } else if (strongShort) {
+    decision = "SHORT";
+    stopLoss = price + atrRef * 1.2;
+    takeProfit = price - atrRef * 2.4;
+    rr = (entry - takeProfit) / (stopLoss - entry);
+    reason =
+      "Confluence baissière validée sur 1h, 4h et 1d, avec 15m non contradictoire.";
+    score = Math.min(92, 72 + shortWeight * 2);
+    confidence = Math.min(90, 68 + shortWeight * 2);
+    leverage = w1 === "SHORT" ? "x2" : "x1";
+  } else {
+    if (longWeight > shortWeight && shortWeight >= 3) {
+      reason = "Biais haussier, mais des timeframes importants restent contradictoires.";
+    } else if (shortWeight > longWeight && longWeight >= 3) {
+      reason = "Biais baissier, mais des timeframes importants restent contradictoires.";
+    } else if (neutralWeight >= 6) {
+      reason = "Marché trop neutre sur plusieurs horizons.";
+    } else if (Math.abs(change24h) < 1) {
+      reason = "Variation journalière trop faible pour un setup convaincant.";
+    }
+  }
+
+  return {
+    decision,
+    score,
+    confidence,
+    entry: Number(entry.toFixed(6)),
+    stopLoss: Number(stopLoss.toFixed(6)),
+    takeProfit: Number(takeProfit.toFixed(6)),
+    leverage,
+    rr: Number(rr.toFixed(2)),
+    reason,
+    confluence: {
+      longWeight,
+      shortWeight,
+      neutralWeight
+    }
+  };
+}
+
 export async function GET(request) {
   try {
     const { searchParams } = new URL(request.url);
     const symbolsParam = searchParams.get("symbols") || "";
-    const timeframe = searchParams.get("timeframe") || "15m";
 
     const symbols = symbolsParam
       .split(",")
@@ -293,23 +361,24 @@ export async function GET(request) {
         try {
           const krakenPair = mapToKrakenPair(symbol);
 
-          const [ticker, candles] = await Promise.all([
+          const [ticker, tfResults] = await Promise.all([
             fetchTicker(krakenPair),
-            fetchKlines(krakenPair, timeframe)
+            Promise.all(
+              ANALYSIS_TFS.map(async (tf) => {
+                const candles = await fetchKlines(krakenPair, tf);
+                return [tf, analyzeSingleTimeframe(candles)];
+              })
+            )
           ]);
+
+          const byTf = Object.fromEntries(tfResults);
 
           const price = Number(ticker.c?.[0]);
           const openToday = Number(ticker.o);
           const change24h =
-            openToday && price
-              ? ((price - openToday) / openToday) * 100
-              : 0;
+            openToday && price ? ((price - openToday) / openToday) * 100 : 0;
 
-          const analysis = analyzeAsset({
-            price,
-            change24h,
-            candles
-          });
+          const confluenceDecision = buildConfluenceDecision(price, change24h, byTf);
 
           return {
             symbol,
@@ -320,8 +389,14 @@ export async function GET(request) {
             high24h: Number(ticker.h?.[1] || 0),
             low24h: Number(ticker.l?.[1] || 0),
             volume: Number(ticker.v?.[1] || 0),
-            timeframe,
-            ...analysis
+            timeframes: byTf,
+            indicators: {
+              ema20: byTf["1h"]?.ema20 || 0,
+              ema50: byTf["1h"]?.ema50 || 0,
+              atr: byTf["1h"]?.atr || 0,
+              rsi: byTf["1h"]?.rsi || 0
+            },
+            ...confluenceDecision
           };
         } catch (error) {
           return {
@@ -336,7 +411,7 @@ export async function GET(request) {
     return Response.json({
       ok: true,
       updatedAt: Date.now(),
-      timeframe,
+      analysisTimeframes: ANALYSIS_TFS,
       items
     });
   } catch (error) {
