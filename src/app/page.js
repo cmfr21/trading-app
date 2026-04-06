@@ -6,7 +6,7 @@ const DEFAULT_ASSETS = [
   { symbol: "BTCUSDT", enabled: true, timeframe: "15m" },
   { symbol: "ETHUSDT", enabled: true, timeframe: "15m" },
   { symbol: "SOLUSDT", enabled: true, timeframe: "15m" },
-  { symbol: "BNBUSDT", enabled: true, timeframe: "15m" }
+  { symbol: "XRPUSDT", enabled: true, timeframe: "15m" }
 ];
 
 function buildEmptyAsset(symbol, timeframe = "15m", enabled = true) {
@@ -47,6 +47,14 @@ function formatPrice(value) {
   }).format(n);
 }
 
+function formatPercent(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return "-";
+  }
+  const n = Number(value);
+  return `${n > 0 ? "+" : ""}${n.toFixed(2)}%`;
+}
+
 function decisionLabel(decision) {
   if (decision === "LONG") return "Long";
   if (decision === "SHORT") return "Short";
@@ -55,26 +63,34 @@ function decisionLabel(decision) {
 
 function safeAssetsFromStorage() {
   if (typeof window === "undefined") {
-    return DEFAULT_ASSETS.map((a) => buildEmptyAsset(a.symbol, a.timeframe, a.enabled));
+    return DEFAULT_ASSETS.map((a) =>
+      buildEmptyAsset(a.symbol, a.timeframe, a.enabled)
+    );
   }
 
   try {
     const raw = window.localStorage.getItem("trading-app-assets");
     if (!raw) {
-      return DEFAULT_ASSETS.map((a) => buildEmptyAsset(a.symbol, a.timeframe, a.enabled));
+      return DEFAULT_ASSETS.map((a) =>
+        buildEmptyAsset(a.symbol, a.timeframe, a.enabled)
+      );
     }
 
     const parsed = JSON.parse(raw);
 
     if (!Array.isArray(parsed) || !parsed.length) {
-      return DEFAULT_ASSETS.map((a) => buildEmptyAsset(a.symbol, a.timeframe, a.enabled));
+      return DEFAULT_ASSETS.map((a) =>
+        buildEmptyAsset(a.symbol, a.timeframe, a.enabled)
+      );
     }
 
     return parsed.map((a) =>
       buildEmptyAsset(a.symbol, a.timeframe || "15m", a.enabled !== false)
     );
   } catch {
-    return DEFAULT_ASSETS.map((a) => buildEmptyAsset(a.symbol, a.timeframe, a.enabled));
+    return DEFAULT_ASSETS.map((a) =>
+      buildEmptyAsset(a.symbol, a.timeframe, a.enabled)
+    );
   }
 }
 
@@ -158,7 +174,9 @@ export default function Page() {
       const responses = await Promise.all(
         Object.entries(groups).map(async ([timeframe, symbols]) => {
           const res = await fetch(
-            `/api/market?symbols=${encodeURIComponent(symbols.join(","))}&timeframe=${encodeURIComponent(timeframe)}`,
+            `/api/market?symbols=${encodeURIComponent(
+              symbols.join(",")
+            )}&timeframe=${encodeURIComponent(timeframe)}`,
             { cache: "no-store" }
           );
 
@@ -178,7 +196,15 @@ export default function Page() {
       setAssets((prev) =>
         prev.map((asset) => {
           const live = map.get(asset.symbol);
-          if (!live || !live.ok) return asset;
+          if (!live) return asset;
+
+          if (!live.ok) {
+            return {
+              ...asset,
+              reason: live.error || "Erreur de récupération",
+              decision: "NO_TRADE"
+            };
+          }
 
           return {
             ...asset,
@@ -221,7 +247,7 @@ export default function Page() {
 
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mounted, assets]);
+  }, [mounted, assets.length]);
 
   function addAsset() {
     const symbol = newAsset.trim().toUpperCase();
@@ -333,8 +359,8 @@ export default function Page() {
             <div className="pill">Trading Signal Control Center</div>
             <h1>Scanner crypto temps réel</h1>
             <p>
-              Prix live, analyse réelle basée sur EMA20, EMA50, ATR et RSI,
-              watchlist persistée et test Telegram.
+              Prix live, analyse EMA20 / EMA50 / ATR / RSI, watchlist persistée
+              et alerte Telegram.
             </p>
           </div>
 
@@ -386,7 +412,9 @@ export default function Page() {
           <div className="status-card">
             <div className="small-label">État</div>
             <div className="status-text">
-              {marketError ? `Erreur : ${marketError}` : alertMessage || "Application prête."}
+              {marketError
+                ? `Erreur : ${marketError}`
+                : alertMessage || "Application prête."}
             </div>
           </div>
         </section>
@@ -405,7 +433,7 @@ export default function Page() {
             <div className="add-row">
               <input
                 className="input"
-                placeholder="Ex: XRPUSDT"
+                placeholder="Ex: LINKUSDT"
                 value={newAsset}
                 onChange={(e) => setNewAsset(e.target.value)}
               />
@@ -450,9 +478,16 @@ export default function Page() {
                     </div>
                     <div>
                       <div className="small-label">24h</div>
-                      <div className={asset.change24h > 0 ? "up" : asset.change24h < 0 ? "down" : "neutral"}>
-                        {asset.change24h > 0 ? "+" : ""}
-                        {Number(asset.change24h || 0).toFixed(2)}%
+                      <div
+                        className={
+                          asset.change24h > 0
+                            ? "up"
+                            : asset.change24h < 0
+                            ? "down"
+                            : "neutral"
+                        }
+                      >
+                        {formatPercent(asset.change24h)}
                       </div>
                     </div>
                   </div>
