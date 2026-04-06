@@ -1,65 +1,65 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 const initialAssets = [
   {
     symbol: "BTCUSDT",
     enabled: true,
-    price: 84250,
-    change24h: 2.8,
-    timeframe: "15m",
-    decision: "LONG",
-    score: 81,
-    confidence: 78,
-    entry: 83980,
-    stopLoss: 82640,
-    takeProfit: 86850,
-    leverage: "x2",
-    rr: 2.14,
-    reason: "Tendance haussière propre, pullback correct, risque modéré.",
-    lastAlert: "Il y a 4 min"
-  },
-  {
-    symbol: "ETHUSDT",
-    enabled: true,
-    price: 4620,
-    change24h: -1.2,
+    price: 0,
+    change24h: 0,
     timeframe: "15m",
     decision: "NO_TRADE",
-    score: 49,
-    confidence: 42,
+    score: 0,
+    confidence: 0,
     entry: 0,
     stopLoss: 0,
     takeProfit: 0,
     leverage: "-",
     rr: 0,
-    reason: "Signaux contradictoires, aucun setup propre.",
+    reason: "En attente d'analyse.",
+    lastAlert: "Aucune"
+  },
+  {
+    symbol: "ETHUSDT",
+    enabled: true,
+    price: 0,
+    change24h: 0,
+    timeframe: "15m",
+    decision: "NO_TRADE",
+    score: 0,
+    confidence: 0,
+    entry: 0,
+    stopLoss: 0,
+    takeProfit: 0,
+    leverage: "-",
+    rr: 0,
+    reason: "En attente d'analyse.",
     lastAlert: "Aucune"
   },
   {
     symbol: "SOLUSDT",
     enabled: true,
-    price: 188.4,
-    change24h: -3.7,
+    price: 0,
+    change24h: 0,
     timeframe: "5m",
-    decision: "SHORT",
-    score: 76,
-    confidence: 73,
-    entry: 187.9,
-    stopLoss: 193.7,
-    takeProfit: 176.1,
-    leverage: "x2",
-    rr: 2.03,
-    reason: "Rejet sous résistance et pression vendeuse.",
-    lastAlert: "Il y a 1 min"
+    decision: "NO_TRADE",
+    score: 0,
+    confidence: 0,
+    entry: 0,
+    stopLoss: 0,
+    takeProfit: 0,
+    leverage: "-",
+    rr: 0,
+    reason: "En attente d'analyse.",
+    lastAlert: "Aucune"
   }
 ];
 
 function formatPrice(value) {
   if (!value) return "-";
   return new Intl.NumberFormat("fr-FR", {
-    maximumFractionDigits: 2
+    maximumFractionDigits: value > 100 ? 2 : 4
   }).format(value);
 }
 
@@ -69,6 +69,73 @@ function decisionLabel(decision) {
   return "Neutre";
 }
 
+function computeSignal(asset) {
+  const change = asset.change24h || 0;
+  const price = asset.price || 0;
+
+  if (!price) {
+    return {
+      decision: "NO_TRADE",
+      score: 0,
+      confidence: 0,
+      entry: 0,
+      stopLoss: 0,
+      takeProfit: 0,
+      leverage: "-",
+      rr: 0,
+      reason: "Pas encore de prix live."
+    };
+  }
+
+  if (change >= 2) {
+    const entry = price;
+    const stopLoss = Number((price * 0.985).toFixed(4));
+    const takeProfit = Number((price * 1.03).toFixed(4));
+    return {
+      decision: "LONG",
+      score: 72,
+      confidence: 68,
+      entry,
+      stopLoss,
+      takeProfit,
+      leverage: "x2",
+      rr: 2,
+      reason:
+        "Momentum 24h haussier. Règle simple V2: biais long si variation >= 2%."
+    };
+  }
+
+  if (change <= -2) {
+    const entry = price;
+    const stopLoss = Number((price * 1.015).toFixed(4));
+    const takeProfit = Number((price * 0.97).toFixed(4));
+    return {
+      decision: "SHORT",
+      score: 72,
+      confidence: 68,
+      entry,
+      stopLoss,
+      takeProfit,
+      leverage: "x2",
+      rr: 2,
+      reason:
+        "Momentum 24h baissier. Règle simple V2: biais short si variation <= -2%."
+    };
+  }
+
+  return {
+    decision: "NO_TRADE",
+    score: 48,
+    confidence: 44,
+    entry: 0,
+    stopLoss: 0,
+    takeProfit: 0,
+    leverage: "-",
+    rr: 0,
+    reason: "Pas de biais assez fort avec la règle simple actuelle."
+  };
+}
+
 export default function Page() {
   const [assets, setAssets] = useState(initialAssets);
   const [selected, setSelected] = useState(initialAssets[0].symbol);
@@ -76,6 +143,11 @@ export default function Page() {
   const [timeframe, setTimeframe] = useState("15m");
   const [search, setSearch] = useState("");
   const [alertsEnabled, setAlertsEnabled] = useState(true);
+  const [marketLoading, setMarketLoading] = useState(false);
+  const [marketError, setMarketError] = useState("");
+  const [lastSync, setLastSync] = useState(null);
+  const [sendingAlert, setSendingAlert] = useState(false);
+  const [alertMessage, setAlertMessage] = useState("");
 
   const filteredAssets = useMemo(() => {
     return assets.filter((a) =>
@@ -96,6 +168,73 @@ export default function Page() {
     const shorts = assets.filter((a) => a.enabled && a.decision === "SHORT").length;
     return { enabled, opportunities, longs, shorts };
   }, [assets]);
+
+  async function refreshMarket() {
+    try {
+      setMarketLoading(true);
+      setMarketError("");
+
+      const symbols = assets
+        .filter((a) => a.enabled)
+        .map((a) => a.symbol)
+        .join(",");
+
+      if (!symbols) {
+        setMarketLoading(false);
+        return;
+      }
+
+      const res = await fetch(`/api/market?symbols=${encodeURIComponent(symbols)}`, {
+        cache: "no-store"
+      });
+
+      const data = await res.json();
+
+      if (!res.ok || !data.ok) {
+        throw new Error(data?.error || "Erreur market");
+      }
+
+      const map = new Map(
+        data.items
+          .filter((item) => item.ok)
+          .map((item) => [item.symbol, item])
+      );
+
+      setAssets((prev) =>
+        prev.map((asset) => {
+          const live = map.get(asset.symbol);
+
+          if (!live) return asset;
+
+          const signal = computeSignal({
+            ...asset,
+            price: live.price,
+            change24h: live.change24h
+          });
+
+          return {
+            ...asset,
+            price: live.price,
+            change24h: live.change24h,
+            ...signal
+          };
+        })
+      );
+
+      setLastSync(data.updatedAt || Date.now());
+    } catch (error) {
+      setMarketError(error?.message || "Erreur inconnue");
+    } finally {
+      setMarketLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    refreshMarket();
+    const interval = setInterval(refreshMarket, 15000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function addAsset() {
     const symbol = newAsset.trim().toUpperCase();
@@ -144,57 +283,47 @@ export default function Page() {
     );
   }
 
-  function runScan() {
-    setAssets((prev) =>
-      prev.map((asset) => {
-        if (!asset.enabled) return asset;
+  async function sendTestAlert() {
+    try {
+      setSendingAlert(true);
+      setAlertMessage("");
 
-        const random = Math.random();
-        let decision = "NO_TRADE";
-        if (random > 0.66) decision = "LONG";
-        else if (random < 0.33) decision = "SHORT";
+      const asset = selectedAsset;
+      const res = await fetch("/api/alerts/test", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          symbol: asset.symbol,
+          side: asset.decision,
+          entry: asset.entry,
+          stopLoss: asset.stopLoss,
+          takeProfit: asset.takeProfit,
+          leverage: asset.leverage,
+          rr: asset.rr
+        })
+      });
 
-        const score = Math.floor(45 + Math.random() * 45);
-        const confidence = Math.floor(40 + Math.random() * 50);
-        const basePrice = asset.price || Number((100 + Math.random() * 1000).toFixed(2));
-        const entry = Number((basePrice * (1 + (Math.random() - 0.5) * 0.01)).toFixed(2));
+      const data = await res.json();
 
-        const stopLoss =
-          decision === "LONG"
-            ? Number((entry * 0.985).toFixed(2))
-            : decision === "SHORT"
-            ? Number((entry * 1.015).toFixed(2))
-            : 0;
+      if (!res.ok || !data.ok) {
+        throw new Error(data?.error || "Échec alerte");
+      }
 
-        const takeProfit =
-          decision === "LONG"
-            ? Number((entry * 1.03).toFixed(2))
-            : decision === "SHORT"
-            ? Number((entry * 0.97).toFixed(2))
-            : 0;
-
-        const rr = decision === "NO_TRADE" ? 0 : Number((2 + Math.random() * 0.8).toFixed(2));
-
-        return {
-          ...asset,
-          decision,
-          score,
-          confidence,
-          entry,
-          stopLoss,
-          takeProfit,
-          rr,
-          leverage: decision === "NO_TRADE" ? "-" : score >= 75 ? "x2" : "x1",
-          reason:
-            decision === "LONG"
-              ? "Signal haussier détecté avec risque maîtrisé."
-              : decision === "SHORT"
-              ? "Signal vendeur détecté avec invalidation claire."
-              : "Pas de configuration assez propre pour entrer.",
-          lastAlert: decision === "NO_TRADE" ? asset.lastAlert : "À l'instant"
-        };
-      })
-    );
+      setAlertMessage("Alerte Telegram envoyée.");
+      setAssets((prev) =>
+        prev.map((a) =>
+          a.symbol === asset.symbol
+            ? { ...a, lastAlert: "À l'instant" }
+            : a
+        )
+      );
+    } catch (error) {
+      setAlertMessage(error?.message || "Erreur envoi alerte");
+    } finally {
+      setSendingAlert(false);
+    }
   }
 
   return (
@@ -205,8 +334,8 @@ export default function Page() {
             <div className="pill">Trading Signal Control Center</div>
             <h1>Scanner crypto temps réel</h1>
             <p>
-              Maquette d’une web app de trading avec watchlist, signaux long/short,
-              niveaux de trade et alertes.
+              Version 2 : prix live via backend Next.js, calcul de signal simple,
+              et test d’alerte Telegram.
             </p>
           </div>
 
@@ -219,8 +348,8 @@ export default function Page() {
                 onChange={(e) => setAlertsEnabled(e.target.checked)}
               />
             </label>
-            <button className="primary-btn" onClick={runScan}>
-              Lancer un scan
+            <button className="primary-btn" onClick={refreshMarket}>
+              {marketLoading ? "Actualisation..." : "Actualiser les prix"}
             </button>
           </div>
         </header>
@@ -241,6 +370,17 @@ export default function Page() {
           <div className="stat-card">
             <div className="stat-label">Shorts détectés</div>
             <div className="stat-value">{stats.shorts}</div>
+          </div>
+        </section>
+
+        <section className="panel" style={{ marginBottom: 24 }}>
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
+            <div className="small-label">
+              Dernière synchro :{" "}
+              {lastSync ? new Date(lastSync).toLocaleString("fr-FR") : "Aucune"}
+            </div>
+            {marketError ? <div className="down">Erreur : {marketError}</div> : null}
+            {alertMessage ? <div className="up">{alertMessage}</div> : null}
           </div>
         </section>
 
@@ -305,7 +445,7 @@ export default function Page() {
                       <div className="small-label">24h</div>
                       <div className={asset.change24h >= 0 ? "up" : "down"}>
                         {asset.change24h >= 0 ? "+" : ""}
-                        {asset.change24h}%
+                        {asset.change24h.toFixed(2)}%
                       </div>
                     </div>
                   </div>
@@ -418,6 +558,20 @@ export default function Page() {
                 <div className="info-row">
                   <span>Dernière alerte</span>
                   <strong>{selectedAsset?.lastAlert}</strong>
+                </div>
+
+                <div style={{ marginTop: 16 }}>
+                  <button
+                    className="primary-btn"
+                    onClick={sendTestAlert}
+                    disabled={!alertsEnabled || sendingAlert}
+                    style={{
+                      width: "100%",
+                      opacity: !alertsEnabled || sendingAlert ? 0.6 : 1
+                    }}
+                  >
+                    {sendingAlert ? "Envoi..." : "Envoyer une alerte test Telegram"}
+                  </button>
                 </div>
               </div>
             </div>
