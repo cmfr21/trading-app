@@ -1,10 +1,10 @@
 function calcEma(values, period) {
-  if (!values.length) return null;
+  if (!values.length || values.length < period) return null;
 
   const k = 2 / (period + 1);
-  let ema = values[0];
+  let ema = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
 
-  for (let i = 1; i < values.length; i += 1) {
+  for (let i = period; i < values.length; i += 1) {
     ema = values[i] * k + ema * (1 - k);
   }
 
@@ -159,44 +159,113 @@ function analyzeAsset({ price, change24h, candles }) {
   };
 }
 
-async function fetchTicker(symbol) {
-  const res = await fetch(
-    `https://api.binance.com/api/v3/ticker/24hr?symbol=${encodeURIComponent(symbol)}`,
-    { cache: "no-store" }
-  );
+function mapToKrakenPair(symbol) {
+  const clean = symbol.toUpperCase();
 
-  if (!res.ok) {
-    throw new Error(`Ticker Binance ${symbol} erreur ${res.status}`);
+  const directMap = {
+    BTCUSDT: "XBTUSDT",
+    ETHUSDT: "ETHUSDT",
+    SOLUSDT: "SOLUSDT",
+    XRPUSDT: "XRPUSDT",
+    ADAUSDT: "ADAUSDT",
+    DOGEUSDT: "DOGEUSDT",
+    LINKUSDT: "LINKUSDT",
+    BNBUSDT: "BNBUSDT",
+    AVAXUSDT: "AVAXUSDT",
+    DOTUSDT: "DOTUSDT",
+    LTCUSDT: "LTCUSDT",
+    BCHUSDT: "BCHUSDT",
+    TRXUSDT: "TRXUSDT",
+    UNIUSDT: "UNIUSDT",
+    AAVEUSDT: "AAVEUSDT",
+    ETCUSDT: "ETCUSDT",
+    XLMUSDT: "XLMUSDT",
+    ATOMUSDT: "ATOMUSDT"
+  };
+
+  if (directMap[clean]) return directMap[clean];
+
+  if (clean.endsWith("USDT")) {
+    const base = clean.slice(0, -4);
+    return `${base}USDT`;
   }
 
-  return res.json();
+  if (clean.endsWith("USD")) {
+    const base = clean.slice(0, -3);
+    return base === "BTC" ? "XBTUSD" : `${base}USD`;
+  }
+
+  return clean;
 }
 
-async function fetchKlines(symbol, interval = "15m", limit = 120) {
+function timeframeToKrakenInterval(timeframe) {
+  const map = {
+    "1m": 1,
+    "5m": 5,
+    "15m": 15,
+    "30m": 30,
+    "1h": 60,
+    "4h": 240,
+    "1d": 1440
+  };
+
+  return map[timeframe] || 15;
+}
+
+async function fetchTicker(krakenPair) {
   const res = await fetch(
-    `https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(
-      symbol
-    )}&interval=${encodeURIComponent(interval)}&limit=${limit}`,
+    `https://api.kraken.com/0/public/Ticker?pair=${encodeURIComponent(krakenPair)}`,
     { cache: "no-store" }
   );
 
   if (!res.ok) {
-    throw new Error(`Klines Binance ${symbol} erreur ${res.status}`);
+    throw new Error(`Ticker Kraken erreur ${res.status}`);
   }
 
-  const rows = await res.json();
+  const data = await res.json();
 
-  if (!Array.isArray(rows)) {
-    throw new Error(`Réponse klines invalide pour ${symbol}`);
+  if (!data?.result || typeof data.result !== "object") {
+    throw new Error("Réponse ticker Kraken invalide");
   }
 
-  return rows.map((row) => ({
+  const firstKey = Object.keys(data.result)[0];
+  if (!firstKey) {
+    throw new Error("Aucun ticker Kraken trouvé");
+  }
+
+  return data.result[firstKey];
+}
+
+async function fetchKlines(krakenPair, timeframe = "15m") {
+  const interval = timeframeToKrakenInterval(timeframe);
+
+  const res = await fetch(
+    `https://api.kraken.com/0/public/OHLC?pair=${encodeURIComponent(krakenPair)}&interval=${interval}`,
+    { cache: "no-store" }
+  );
+
+  if (!res.ok) {
+    throw new Error(`OHLC Kraken erreur ${res.status}`);
+  }
+
+  const data = await res.json();
+
+  if (!data?.result || typeof data.result !== "object") {
+    throw new Error("Réponse OHLC Kraken invalide");
+  }
+
+  const pairKey = Object.keys(data.result).find((key) => key !== "last");
+  if (!pairKey || !Array.isArray(data.result[pairKey])) {
+    throw new Error("Aucune bougie Kraken trouvée");
+  }
+
+  return data.result[pairKey].map((row) => ({
     openTime: row[0],
     open: Number(row[1]),
     high: Number(row[2]),
     low: Number(row[3]),
     close: Number(row[4]),
-    volume: Number(row[5])
+    volume: Number(row[6])
   }));
 }
 
@@ -222,13 +291,19 @@ export async function GET(request) {
     const items = await Promise.all(
       symbols.map(async (symbol) => {
         try {
+          const krakenPair = mapToKrakenPair(symbol);
+
           const [ticker, candles] = await Promise.all([
-            fetchTicker(symbol),
-            fetchKlines(symbol, timeframe, 120)
+            fetchTicker(krakenPair),
+            fetchKlines(krakenPair, timeframe)
           ]);
 
-          const price = Number(ticker.lastPrice);
-          const change24h = Number(ticker.priceChangePercent);
+          const price = Number(ticker.c?.[0]);
+          const openToday = Number(ticker.o);
+          const change24h =
+            openToday && price
+              ? ((price - openToday) / openToday) * 100
+              : 0;
 
           const analysis = analyzeAsset({
             price,
@@ -238,12 +313,13 @@ export async function GET(request) {
 
           return {
             symbol,
+            sourcePair: krakenPair,
             ok: true,
             price,
             change24h,
-            high24h: Number(ticker.highPrice),
-            low24h: Number(ticker.lowPrice),
-            volume: Number(ticker.volume),
+            high24h: Number(ticker.h?.[1] || 0),
+            low24h: Number(ticker.l?.[1] || 0),
+            volume: Number(ticker.v?.[1] || 0),
             timeframe,
             ...analysis
           };
