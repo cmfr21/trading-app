@@ -2,65 +2,49 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-const initialAssets = [
-  {
-    symbol: "BTCUSDT",
-    enabled: true,
-    price: 0,
-    change24h: 0,
-    timeframe: "15m",
-    decision: "NO_TRADE",
-    score: 0,
-    confidence: 0,
-    entry: 0,
-    stopLoss: 0,
-    takeProfit: 0,
-    leverage: "-",
-    rr: 0,
-    reason: "En attente d'analyse.",
-    lastAlert: "Aucune"
-  },
-  {
-    symbol: "ETHUSDT",
-    enabled: true,
-    price: 0,
-    change24h: 0,
-    timeframe: "15m",
-    decision: "NO_TRADE",
-    score: 0,
-    confidence: 0,
-    entry: 0,
-    stopLoss: 0,
-    takeProfit: 0,
-    leverage: "-",
-    rr: 0,
-    reason: "En attente d'analyse.",
-    lastAlert: "Aucune"
-  },
-  {
-    symbol: "SOLUSDT",
-    enabled: true,
-    price: 0,
-    change24h: 0,
-    timeframe: "5m",
-    decision: "NO_TRADE",
-    score: 0,
-    confidence: 0,
-    entry: 0,
-    stopLoss: 0,
-    takeProfit: 0,
-    leverage: "-",
-    rr: 0,
-    reason: "En attente d'analyse.",
-    lastAlert: "Aucune"
-  }
+const DEFAULT_ASSETS = [
+  { symbol: "BTCUSDT", enabled: true, timeframe: "15m" },
+  { symbol: "ETHUSDT", enabled: true, timeframe: "15m" },
+  { symbol: "SOLUSDT", enabled: true, timeframe: "15m" },
+  { symbol: "BNBUSDT", enabled: true, timeframe: "15m" }
 ];
 
+function buildEmptyAsset(symbol, timeframe = "15m", enabled = true) {
+  return {
+    symbol,
+    enabled,
+    timeframe,
+    price: 0,
+    change24h: 0,
+    decision: "NO_TRADE",
+    score: 0,
+    confidence: 0,
+    entry: 0,
+    stopLoss: 0,
+    takeProfit: 0,
+    leverage: "-",
+    rr: 0,
+    reason: "En attente d'analyse.",
+    lastAlert: "Aucune",
+    indicators: {
+      ema20: 0,
+      ema50: 0,
+      atr: 0,
+      rsi: 0
+    }
+  };
+}
+
 function formatPrice(value) {
-  if (!value) return "-";
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return "-";
+  }
+
+  const n = Number(value);
+
   return new Intl.NumberFormat("fr-FR", {
-    maximumFractionDigits: value > 100 ? 2 : 4
-  }).format(value);
+    maximumFractionDigits: n >= 100 ? 2 : n >= 1 ? 4 : 6
+  }).format(n);
 }
 
 function decisionLabel(decision) {
@@ -69,74 +53,36 @@ function decisionLabel(decision) {
   return "Neutre";
 }
 
-function computeSignal(asset) {
-  const price = asset.price;
-
-  if (!price) {
-    return {
-      decision: "NO_TRADE",
-      score: 0,
-      confidence: 0,
-      entry: 0,
-      stopLoss: 0,
-      takeProfit: 0,
-      leverage: "-",
-      rr: 0,
-      reason: "Pas de données."
-    };
+function safeAssetsFromStorage() {
+  if (typeof window === "undefined") {
+    return DEFAULT_ASSETS.map((a) => buildEmptyAsset(a.symbol, a.timeframe, a.enabled));
   }
 
-  // Simulation simple de tendance et volatilité
-  // Étape intermédiaire avant vraie EMA / ATR sur bougies Binance
-  const ema = price * (1 + (Math.random() - 0.5) * 0.02);
-  const atr = price * 0.01;
+  try {
+    const raw = window.localStorage.getItem("trading-app-assets");
+    if (!raw) {
+      return DEFAULT_ASSETS.map((a) => buildEmptyAsset(a.symbol, a.timeframe, a.enabled));
+    }
 
-  let decision = "NO_TRADE";
-  let entry = price;
-  let stopLoss = 0;
-  let takeProfit = 0;
-  let rr = 0;
-  let reason = "Conditions insuffisantes pour entrer.";
+    const parsed = JSON.parse(raw);
 
-  if (price > ema) {
-    stopLoss = price - atr;
-    takeProfit = price + atr * 2;
-    rr = 2;
-    decision = "LONG";
-    reason = "Prix au-dessus de la moyenne, biais haussier exploitable.";
-  } else if (price < ema) {
-    stopLoss = price + atr;
-    takeProfit = price - atr * 2;
-    rr = 2;
-    decision = "SHORT";
-    reason = "Prix sous la moyenne, biais baissier exploitable.";
+    if (!Array.isArray(parsed) || !parsed.length) {
+      return DEFAULT_ASSETS.map((a) => buildEmptyAsset(a.symbol, a.timeframe, a.enabled));
+    }
+
+    return parsed.map((a) =>
+      buildEmptyAsset(a.symbol, a.timeframe || "15m", a.enabled !== false)
+    );
+  } catch {
+    return DEFAULT_ASSETS.map((a) => buildEmptyAsset(a.symbol, a.timeframe, a.enabled));
   }
-
-  if (rr < 2) {
-    decision = "NO_TRADE";
-    stopLoss = 0;
-    takeProfit = 0;
-    reason = "Ratio risque / rendement insuffisant.";
-  }
-
-  return {
-    decision,
-    score: decision === "NO_TRADE" ? 50 : 75,
-    confidence: decision === "NO_TRADE" ? 45 : 70,
-    entry: Number(entry.toFixed(4)),
-    stopLoss: Number(stopLoss.toFixed(4)),
-    takeProfit: Number(takeProfit.toFixed(4)),
-    leverage: decision === "NO_TRADE" ? "-" : "x2",
-    rr,
-    reason
-  };
 }
 
 export default function Page() {
-  const [assets, setAssets] = useState(initialAssets);
-  const [selected, setSelected] = useState(initialAssets[0].symbol);
+  const [assets, setAssets] = useState([]);
+  const [selected, setSelected] = useState("BTCUSDT");
   const [newAsset, setNewAsset] = useState("");
-  const [timeframe, setTimeframe] = useState("15m");
+  const [defaultTimeframe, setDefaultTimeframe] = useState("15m");
   const [search, setSearch] = useState("");
   const [alertsEnabled, setAlertsEnabled] = useState(true);
   const [marketLoading, setMarketLoading] = useState(false);
@@ -144,6 +90,26 @@ export default function Page() {
   const [lastSync, setLastSync] = useState(null);
   const [sendingAlert, setSendingAlert] = useState(false);
   const [alertMessage, setAlertMessage] = useState("");
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    const initial = safeAssetsFromStorage();
+    setAssets(initial);
+    setSelected(initial[0]?.symbol || "BTCUSDT");
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (!mounted) return;
+
+    const slim = assets.map((a) => ({
+      symbol: a.symbol,
+      enabled: a.enabled,
+      timeframe: a.timeframe
+    }));
+
+    window.localStorage.setItem("trading-app-assets", JSON.stringify(slim));
+  }, [assets, mounted]);
 
   const filteredAssets = useMemo(() => {
     return assets.filter((a) =>
@@ -152,7 +118,7 @@ export default function Page() {
   }, [assets, search]);
 
   const selectedAsset = useMemo(() => {
-    return assets.find((a) => a.symbol === selected) || assets[0];
+    return assets.find((a) => a.symbol === selected) || assets[0] || null;
   }, [assets, selected]);
 
   const stats = useMemo(() => {
@@ -162,62 +128,77 @@ export default function Page() {
     ).length;
     const longs = assets.filter((a) => a.enabled && a.decision === "LONG").length;
     const shorts = assets.filter((a) => a.enabled && a.decision === "SHORT").length;
-    return { enabled, opportunities, longs, shorts };
+    const neutral = assets.filter(
+      (a) => a.enabled && a.decision === "NO_TRADE"
+    ).length;
+
+    return { enabled, opportunities, longs, shorts, neutral };
   }, [assets]);
 
   async function refreshMarket() {
     try {
       setMarketLoading(true);
       setMarketError("");
+      setAlertMessage("");
 
-      const symbols = assets
-        .filter((a) => a.enabled)
-        .map((a) => a.symbol)
-        .join(",");
+      const enabledAssets = assets.filter((a) => a.enabled);
 
-      if (!symbols) {
+      if (!enabledAssets.length) {
         setMarketLoading(false);
         return;
       }
 
-      const res = await fetch(`/api/market?symbols=${encodeURIComponent(symbols)}`, {
-        cache: "no-store"
-      });
+      const groups = enabledAssets.reduce((acc, asset) => {
+        const tf = asset.timeframe || "15m";
+        if (!acc[tf]) acc[tf] = [];
+        acc[tf].push(asset.symbol);
+        return acc;
+      }, {});
 
-      const data = await res.json();
+      const responses = await Promise.all(
+        Object.entries(groups).map(async ([timeframe, symbols]) => {
+          const res = await fetch(
+            `/api/market?symbols=${encodeURIComponent(symbols.join(","))}&timeframe=${encodeURIComponent(timeframe)}`,
+            { cache: "no-store" }
+          );
 
-      if (!res.ok || !data.ok) {
-        throw new Error(data?.error || "Erreur market");
-      }
+          const data = await res.json();
 
-      const map = new Map(
-        data.items
-          .filter((item) => item.ok)
-          .map((item) => [item.symbol, item])
+          if (!res.ok || !data.ok) {
+            throw new Error(data?.error || `Erreur market ${timeframe}`);
+          }
+
+          return data.items;
+        })
       );
+
+      const flatItems = responses.flat();
+      const map = new Map(flatItems.map((item) => [item.symbol, item]));
 
       setAssets((prev) =>
         prev.map((asset) => {
           const live = map.get(asset.symbol);
-
-          if (!live) return asset;
-
-          const signal = computeSignal({
-            ...asset,
-            price: live.price,
-            change24h: live.change24h
-          });
+          if (!live || !live.ok) return asset;
 
           return {
             ...asset,
             price: live.price,
             change24h: live.change24h,
-            ...signal
+            decision: live.decision,
+            score: live.score,
+            confidence: live.confidence,
+            entry: live.entry,
+            stopLoss: live.stopLoss,
+            takeProfit: live.takeProfit,
+            leverage: live.leverage,
+            rr: live.rr,
+            reason: live.reason,
+            indicators: live.indicators || asset.indicators
           };
         })
       );
 
-      setLastSync(data.updatedAt || Date.now());
+      setLastSync(Date.now());
     } catch (error) {
       setMarketError(error?.message || "Erreur inconnue");
     } finally {
@@ -226,40 +207,43 @@ export default function Page() {
   }
 
   useEffect(() => {
+    if (!mounted || !assets.length) return;
     refreshMarket();
-    const interval = setInterval(refreshMarket, 15000);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mounted]);
+
+  useEffect(() => {
+    if (!mounted || !assets.length) return;
+
+    const interval = setInterval(() => {
+      refreshMarket();
+    }, 20000);
+
     return () => clearInterval(interval);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mounted, assets]);
 
   function addAsset() {
     const symbol = newAsset.trim().toUpperCase();
     if (!symbol) return;
+
+    if (!/^[A-Z0-9]{4,20}$/.test(symbol)) {
+      setAlertMessage("Symbole invalide. Exemple : XRPUSDT");
+      return;
+    }
+
     if (assets.some((a) => a.symbol === symbol)) {
+      setAlertMessage("Cet actif est déjà dans la watchlist.");
       setNewAsset("");
       return;
     }
 
-    const asset = {
-      symbol,
-      enabled: true,
-      price: 0,
-      change24h: 0,
-      timeframe,
-      decision: "NO_TRADE",
-      score: 0,
-      confidence: 0,
-      entry: 0,
-      stopLoss: 0,
-      takeProfit: 0,
-      leverage: "-",
-      rr: 0,
-      reason: "En attente d'analyse.",
-      lastAlert: "Aucune"
-    };
+    const asset = buildEmptyAsset(symbol, defaultTimeframe, true);
 
     setAssets((prev) => [asset, ...prev]);
     setSelected(symbol);
     setNewAsset("");
+    setAlertMessage("Actif ajouté. Clique sur Actualiser les prix.");
   }
 
   function removeAsset(symbol) {
@@ -278,25 +262,35 @@ export default function Page() {
     );
   }
 
+  function updateAssetTimeframe(symbol, timeframe) {
+    setAssets((prev) =>
+      prev.map((a) =>
+        a.symbol === symbol ? { ...a, timeframe } : a
+      )
+    );
+  }
+
   async function sendTestAlert() {
     try {
+      if (!selectedAsset) return;
+
       setSendingAlert(true);
       setAlertMessage("");
 
-      const asset = selectedAsset;
       const res = await fetch("/api/alerts/test", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          symbol: asset.symbol,
-          side: asset.decision,
-          entry: asset.entry,
-          stopLoss: asset.stopLoss,
-          takeProfit: asset.takeProfit,
-          leverage: asset.leverage,
-          rr: asset.rr
+          symbol: selectedAsset.symbol,
+          side: selectedAsset.decision,
+          entry: selectedAsset.entry,
+          stopLoss: selectedAsset.stopLoss,
+          takeProfit: selectedAsset.takeProfit,
+          leverage: selectedAsset.leverage,
+          rr: selectedAsset.rr,
+          reason: selectedAsset.reason
         })
       });
 
@@ -309,7 +303,7 @@ export default function Page() {
       setAlertMessage("Alerte Telegram envoyée.");
       setAssets((prev) =>
         prev.map((a) =>
-          a.symbol === asset.symbol
+          a.symbol === selectedAsset.symbol
             ? { ...a, lastAlert: "À l'instant" }
             : a
         )
@@ -321,6 +315,16 @@ export default function Page() {
     }
   }
 
+  if (!mounted) {
+    return (
+      <main className="page">
+        <div className="container">
+          <div className="panel">Chargement de l'application...</div>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="page">
       <div className="container">
@@ -329,8 +333,8 @@ export default function Page() {
             <div className="pill">Trading Signal Control Center</div>
             <h1>Scanner crypto temps réel</h1>
             <p>
-              Version 3 : prix live via backend Next.js, logique de signal
-              plus cohérente, et test d’alerte Telegram.
+              Prix live, analyse réelle basée sur EMA20, EMA50, ATR et RSI,
+              watchlist persistée et test Telegram.
             </p>
           </div>
 
@@ -366,16 +370,24 @@ export default function Page() {
             <div className="stat-label">Shorts détectés</div>
             <div className="stat-value">{stats.shorts}</div>
           </div>
+          <div className="stat-card">
+            <div className="stat-label">Neutres</div>
+            <div className="stat-value">{stats.neutral}</div>
+          </div>
         </section>
 
-        <section className="panel" style={{ marginBottom: 24 }}>
-          <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
-            <div className="small-label">
-              Dernière synchro :{" "}
+        <section className="status-bar">
+          <div className="status-card">
+            <div className="small-label">Dernière synchro</div>
+            <div className="status-text">
               {lastSync ? new Date(lastSync).toLocaleString("fr-FR") : "Aucune"}
             </div>
-            {marketError ? <div className="down">Erreur : {marketError}</div> : null}
-            {alertMessage ? <div className="up">{alertMessage}</div> : null}
+          </div>
+          <div className="status-card">
+            <div className="small-label">État</div>
+            <div className="status-text">
+              {marketError ? `Erreur : ${marketError}` : alertMessage || "Application prête."}
+            </div>
           </div>
         </section>
 
@@ -399,8 +411,8 @@ export default function Page() {
               />
               <select
                 className="select"
-                value={timeframe}
-                onChange={(e) => setTimeframe(e.target.value)}
+                value={defaultTimeframe}
+                onChange={(e) => setDefaultTimeframe(e.target.value)}
               >
                 <option value="5m">5m</option>
                 <option value="15m">15m</option>
@@ -438,8 +450,8 @@ export default function Page() {
                     </div>
                     <div>
                       <div className="small-label">24h</div>
-                      <div className={asset.change24h >= 0 ? "up" : "down"}>
-                        {asset.change24h >= 0 ? "+" : ""}
+                      <div className={asset.change24h > 0 ? "up" : asset.change24h < 0 ? "down" : "neutral"}>
+                        {asset.change24h > 0 ? "+" : ""}
                         {Number(asset.change24h || 0).toFixed(2)}%
                       </div>
                     </div>
@@ -451,6 +463,22 @@ export default function Page() {
                       className="progress-bar"
                       style={{ width: `${asset.score}%` }}
                     />
+                  </div>
+
+                  <div style={{ marginBottom: 12 }}>
+                    <select
+                      className="select"
+                      value={asset.timeframe}
+                      onChange={(e) => {
+                        e.stopPropagation();
+                        updateAssetTimeframe(asset.symbol, e.target.value);
+                      }}
+                    >
+                      <option value="5m">5m</option>
+                      <option value="15m">15m</option>
+                      <option value="1h">1h</option>
+                      <option value="4h">4h</option>
+                    </select>
                   </div>
 
                   <div className="asset-actions">
@@ -534,6 +562,26 @@ export default function Page() {
                     />
                   </div>
                 </div>
+
+                <div className="metric-block">
+                  <div className="small-label">EMA20</div>
+                  <div>{formatPrice(selectedAsset?.indicators?.ema20)}</div>
+                </div>
+
+                <div className="metric-block">
+                  <div className="small-label">EMA50</div>
+                  <div>{formatPrice(selectedAsset?.indicators?.ema50)}</div>
+                </div>
+
+                <div className="metric-block">
+                  <div className="small-label">ATR</div>
+                  <div>{formatPrice(selectedAsset?.indicators?.atr)}</div>
+                </div>
+
+                <div className="metric-block">
+                  <div className="small-label">RSI</div>
+                  <div>{formatPrice(selectedAsset?.indicators?.rsi)}</div>
+                </div>
               </div>
 
               <div className="summary-card">
@@ -554,6 +602,10 @@ export default function Page() {
                   <span>Dernière alerte</span>
                   <strong>{selectedAsset?.lastAlert}</strong>
                 </div>
+                <div className="info-row">
+                  <span>Timeframe</span>
+                  <strong>{selectedAsset?.timeframe}</strong>
+                </div>
 
                 <div style={{ marginTop: 16 }}>
                   <button
@@ -565,7 +617,17 @@ export default function Page() {
                       opacity: !alertsEnabled || sendingAlert ? 0.6 : 1
                     }}
                   >
-                    {sendingAlert ? "Envoi..." : "Envoyer une alerte test Telegram"}
+                    {sendingAlert ? "Envoi..." : "Envoyer une alerte Telegram"}
+                  </button>
+                </div>
+
+                <div style={{ marginTop: 12 }}>
+                  <button
+                    className="ghost-btn"
+                    onClick={refreshMarket}
+                    style={{ width: "100%" }}
+                  >
+                    Recalculer l'analyse
                   </button>
                 </div>
               </div>
