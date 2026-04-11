@@ -27,20 +27,20 @@ const STYLE_CONFIG = {
 const RISK_CONFIG = {
   conservative: {
     rrMin: 2.0,
-    stopAtr: 1.0,
+    stopAtr: 0.9,
     tpAtr: 2.4,
     liquidationBuffer: 3.5
   },
   moderate: {
     rrMin: 1.6,
-    stopAtr: 1.2,
-    tpAtr: 2.6,
+    stopAtr: 1.15,
+    tpAtr: 2.8,
     liquidationBuffer: 2.5
   },
   aggressive: {
-    rrMin: 1.3,
-    stopAtr: 1.5,
-    tpAtr: 2.8,
+    rrMin: 1.25,
+    stopAtr: 1.45,
+    tpAtr: 3.1,
     liquidationBuffer: 1.8
   }
 };
@@ -304,16 +304,23 @@ function analyzeSingleTimeframe(candles) {
     price < ichimoku.cloudBottom &&
     ichimoku.tenkan <= ichimoku.kijun;
 
-  let direction = "NEUTRAL";
-  let score = 40;
+  let longVotes = 0;
+  let shortVotes = 0;
 
-  if (bullishEma && rsi >= 45 && rsi <= 72) {
-    direction = "LONG";
-    score = bullishIchimoku ? 82 : 68;
-  } else if (bearishEma && rsi >= 28 && rsi <= 55) {
-    direction = "SHORT";
-    score = bearishIchimoku ? 82 : 68;
-  }
+  if (bullishEma) longVotes += 1;
+  if (bearishEma) shortVotes += 1;
+
+  if (bullishIchimoku) longVotes += 1;
+  if (bearishIchimoku) shortVotes += 1;
+
+  if (rsi >= 48 && rsi <= 72) longVotes += 1;
+  if (rsi >= 28 && rsi <= 52) shortVotes += 1;
+
+  let direction = "NEUTRAL";
+  if (longVotes >= 2 && shortVotes === 0) direction = "LONG";
+  else if (shortVotes >= 2 && longVotes === 0) direction = "SHORT";
+
+  const score = Math.min(90, 45 + Math.max(longVotes, shortVotes) * 14);
 
   return {
     direction,
@@ -329,11 +336,7 @@ function analyzeSingleTimeframe(candles) {
 
 function estimateLiquidationPrice(side, entry, leverage) {
   if (!entry || !leverage || leverage <= 0) return 0;
-
-  if (side === "LONG") {
-    return entry * (1 - 1 / leverage);
-  }
-
+  if (side === "LONG") return entry * (1 - 1 / leverage);
   return entry * (1 + 1 / leverage);
 }
 
@@ -359,7 +362,6 @@ function buildSetupFromPair(pair, byTf, currentPrice, riskMode) {
   const risk = RISK_CONFIG[riskMode];
 
   if (!trade || !context) return null;
-  if (!trade.direction || !context.direction) return null;
   if (trade.direction === "NEUTRAL" || context.direction === "NEUTRAL") return null;
   if (trade.direction !== context.direction) return null;
 
@@ -375,43 +377,58 @@ function buildSetupFromPair(pair, byTf, currentPrice, riskMode) {
   let takeProfit = 0;
 
   if (side === "LONG") {
-    const lowerZoneCandidates = [
-      currentPrice,
-      trade.ema20 || currentPrice,
-      tradeIchi?.kijun || currentPrice,
-      context.ema20 || currentPrice
+    const zoneCandidates = [
+      trade.ema20,
+      tradeIchi?.kijun,
+      context.ema20,
+      currentPrice - tradeAtr * 0.35
     ].filter((v) => Number.isFinite(v));
 
-    entryMin = Math.min(...lowerZoneCandidates);
-    entryMax = currentPrice;
+    entryMin = Math.min(...zoneCandidates);
+    entryMax = Math.max(
+      Math.min(currentPrice, trade.ema20 || currentPrice),
+      entryMin
+    );
 
     const stopCandidates = [
-      tradeIchi?.kijun,
+      tradeIchi?.cloudBottom,
       contextIchi?.cloudBottom,
+      tradeIchi?.kijun ? tradeIchi.kijun - tradeAtr * 0.25 : null,
       currentPrice - tradeAtr * risk.stopAtr
     ].filter((v) => Number.isFinite(v));
 
     stopLoss = Math.min(...stopCandidates);
     takeProfit = currentPrice + tradeAtr * risk.tpAtr;
   } else {
-    const upperZoneCandidates = [
-      currentPrice,
-      trade.ema20 || currentPrice,
-      tradeIchi?.kijun || currentPrice,
-      context.ema20 || currentPrice
+    const zoneCandidates = [
+      trade.ema20,
+      tradeIchi?.kijun,
+      context.ema20,
+      currentPrice + tradeAtr * 0.35
     ].filter((v) => Number.isFinite(v));
 
-    entryMin = currentPrice;
-    entryMax = Math.max(...upperZoneCandidates);
+    entryMin = Math.min(
+      Math.max(currentPrice, trade.ema20 || currentPrice),
+      Math.max(...zoneCandidates)
+    );
+    entryMax = Math.max(...zoneCandidates);
 
     const stopCandidates = [
-      tradeIchi?.kijun,
+      tradeIchi?.cloudTop,
       contextIchi?.cloudTop,
+      tradeIchi?.kijun ? tradeIchi.kijun + tradeAtr * 0.25 : null,
       currentPrice + tradeAtr * risk.stopAtr
     ].filter((v) => Number.isFinite(v));
 
     stopLoss = Math.max(...stopCandidates);
     takeProfit = currentPrice - tradeAtr * risk.tpAtr;
+  }
+
+  if (!Number.isFinite(entryMin) || !Number.isFinite(entryMax)) return null;
+  if (!Number.isFinite(stopLoss) || !Number.isFinite(takeProfit)) return null;
+  if (entryMin === entryMax) {
+    if (side === "LONG") entryMin = entryMin * 0.9975;
+    else entryMax = entryMax * 1.0025;
   }
 
   const rr =
@@ -428,19 +445,18 @@ function buildSetupFromPair(pair, byTf, currentPrice, riskMode) {
   if (!liquidationPrice) return null;
 
   const scoreBase = Math.round((trade.score + context.score) / 2);
-  const score =
-    Math.min(
-      96,
-      scoreBase +
-        (trade.ichimoku ? 4 : 0) +
-        (context.ichimoku ? 4 : 0) +
-        (rr >= 2 ? 4 : 0)
-    );
+  const score = Math.min(
+    96,
+    scoreBase +
+      (trade.ichimoku ? 4 : 0) +
+      (context.ichimoku ? 4 : 0) +
+      (rr >= 2 ? 4 : 0)
+  );
 
   const reason =
     side === "LONG"
-      ? `${pair.tradeTf} et ${pair.contextTf} concordent à l'achat avec EMA, RSI, ATR et Ichimoku.`
-      : `${pair.tradeTf} et ${pair.contextTf} concordent à la vente avec EMA, RSI, ATR et Ichimoku.`;
+      ? `${pair.tradeTf} et ${pair.contextTf} concordent à l'achat avec Ichimoku + EMA + RSI + ATR.`
+      : `${pair.tradeTf} et ${pair.contextTf} concordent à la vente avec Ichimoku + EMA + RSI + ATR.`;
 
   return {
     setupId: `${pair.tradeTf}-${pair.contextTf}-${side}-${riskMode}`,
@@ -477,9 +493,9 @@ function buildAssetDecision(price, change24h, byTf, tradeStyle, riskMode) {
       decision: "NO_TRADE",
       score: 42,
       confidence: 40,
-      entry: Number(price.toFixed(6)),
-      entryMin: Number(price.toFixed(6)),
-      entryMax: Number(price.toFixed(6)),
+      entry: 0,
+      entryMin: 0,
+      entryMax: 0,
       stopLoss: 0,
       takeProfit: 0,
       leverage: "-",
