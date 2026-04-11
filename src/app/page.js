@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 const DEFAULT_ASSETS = [
   { symbol: "BTCUSDT", enabled: true },
@@ -82,6 +82,7 @@ function formatPercent(value) {
   ) {
     return "-";
   }
+
   const n = Number(value);
   return `${n > 0 ? "+" : ""}${n.toFixed(2)}%`;
 }
@@ -124,6 +125,7 @@ function safeAssetsFromStorage() {
 function buildSignalSignature(item) {
   const best = item.bestSetup;
   if (!best) return `${item.symbol}|NO_TRADE`;
+
   return [
     item.symbol,
     best.decision,
@@ -138,12 +140,10 @@ function buildSignalSignature(item) {
 function hasIchimoku(tfData) {
   return Boolean(
     tfData?.ichimoku &&
-      (
-        tfData.ichimoku.tenkan !== undefined ||
+      (tfData.ichimoku.tenkan !== undefined ||
         tfData.ichimoku.kijun !== undefined ||
         tfData.ichimoku.cloudTop !== undefined ||
-        tfData.ichimoku.cloudBottom !== undefined
-      )
+        tfData.ichimoku.cloudBottom !== undefined)
   );
 }
 
@@ -162,6 +162,7 @@ export default function Page() {
   const [sendingAlert, setSendingAlert] = useState(false);
   const [alertMessage, setAlertMessage] = useState("");
   const [mounted, setMounted] = useState(false);
+  const [scanResults, setScanResults] = useState([]);
 
   const alertCache = useRef({});
 
@@ -213,9 +214,11 @@ export default function Page() {
 
     const exists = selectedAsset.setups.some((s) => s.setupId === selectedSetupId);
     if (!exists) {
-      setSelectedSetupId(selectedAsset.bestSetup?.setupId || selectedAsset.setups[0].setupId);
+      setSelectedSetupId(
+        selectedAsset.bestSetup?.setupId || selectedAsset.setups[0].setupId
+      );
     }
-  }, [selectedAsset]);
+  }, [selectedAsset, selectedSetupId]);
 
   const stats = useMemo(() => {
     const enabled = assets.filter((a) => a.enabled).length;
@@ -337,10 +340,33 @@ export default function Page() {
           };
         })
       );
-
       setLastSync(Date.now());
     } catch (error) {
       setMarketError(error?.message || "Erreur inconnue");
+    } finally {
+      setMarketLoading(false);
+    }
+  }
+
+  async function runScan() {
+    try {
+      setMarketLoading(true);
+      setMarketError("");
+
+      const res = await fetch(
+        `/api/market?scan=1&tradeStyle=${encodeURIComponent(tradeStyle)}&riskMode=${encodeURIComponent(riskMode)}`,
+        { cache: "no-store" }
+      );
+
+      const data = await res.json();
+
+      if (!res.ok || !data.ok) {
+        throw new Error(data?.error || "Erreur scan");
+      }
+
+      setScanResults(data.opportunities || []);
+    } catch (error) {
+      setMarketError(error?.message || "Erreur scan");
     } finally {
       setMarketLoading(false);
     }
@@ -465,8 +491,8 @@ export default function Page() {
             <div className="pill">Trading Signal Control Center</div>
             <h1>Scanner crypto à setups multi-timeframe</h1>
             <p>
-              Choisis ton horizon de trade et ton mode de risque. Un setup
-              n’apparaît que s’il respecte la stratégie.
+              Version renforcée avec filtres anti faux signaux, scanner
+              multi-actifs et backtest séparé.
             </p>
           </div>
 
@@ -479,6 +505,10 @@ export default function Page() {
                 onChange={(e) => setAlertsEnabled(e.target.checked)}
               />
             </label>
+
+            <button className="ghost-btn" onClick={runScan}>
+              Scanner le marché
+            </button>
 
             <button className="primary-btn" onClick={refreshMarket}>
               {marketLoading ? "Actualisation..." : "Actualiser les prix"}
@@ -525,6 +555,34 @@ export default function Page() {
             </div>
           </div>
         </section>
+
+        {scanResults.length ? (
+          <section className="panel" style={{ marginBottom: 24 }}>
+            <h2>Top opportunités du scan</h2>
+            <div className="details-grid">
+              {scanResults.map((item) => (
+                <div className="detail-card" key={item.symbol}>
+                  <div className="small-label">{item.symbol}</div>
+                  <div style={{ fontSize: 20, fontWeight: 700, marginTop: 6 }}>
+                    {decisionLabel(item.bestSetup?.decision || "NO_TRADE")}
+                  </div>
+                  <div className="small-label" style={{ marginTop: 8 }}>
+                    Setup
+                  </div>
+                  <div>
+                    {item.bestSetup
+                      ? `${item.bestSetup.tradeTf} + ${item.bestSetup.contextTf}`
+                      : "Pas de trade"}
+                  </div>
+                  <div className="small-label" style={{ marginTop: 8 }}>
+                    RR
+                  </div>
+                  <div>{item.bestSetup?.rr ?? "-"}</div>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
 
         <section className="main-grid">
           <aside className="panel">
@@ -659,11 +717,15 @@ export default function Page() {
                   </option>
                 ))}
               </select>
+
+              <a className="ghost-btn" href="/backtest" style={{ textDecoration: "none" }}>
+                Ouvrir le backtest
+              </a>
             </div>
 
             <p className="muted">
-              Les menus sont maintenant liés au calcul. Si aucun setup ne respecte
-              la stratégie choisie, l’application affiche “Pas de trade”.
+              Les menus sont placés sous le nom de l’actif et agissent
+              réellement sur le calcul.
             </p>
 
             <div className="details-grid">
@@ -871,7 +933,12 @@ export default function Page() {
                         {tfDirectionLabel(tfData?.direction)}
                       </div>
 
-                      <div className="small-label">EMA20</div>
+                      <div className="small-label">Phase</div>
+                      <div>{tfData?.phase || "-"}</div>
+
+                      <div className="small-label" style={{ marginTop: 8 }}>
+                        EMA20
+                      </div>
                       <div>{formatPrice(tfData?.ema20)}</div>
 
                       <div className="small-label" style={{ marginTop: 8 }}>
