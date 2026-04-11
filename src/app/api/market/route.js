@@ -10,7 +10,6 @@ const TF_WEIGHTS = {
 
 function calcEma(values, period) {
   if (!values.length || values.length < period) return null;
-
   const k = 2 / (period + 1);
   let ema = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
 
@@ -81,6 +80,53 @@ function calcAtr(candles, period = 14) {
   return atr;
 }
 
+function highestHigh(candles, period, endIndex) {
+  const start = Math.max(0, endIndex - period + 1);
+  let max = -Infinity;
+  for (let i = start; i <= endIndex; i += 1) {
+    if (candles[i].high > max) max = candles[i].high;
+  }
+  return max;
+}
+
+function lowestLow(candles, period, endIndex) {
+  const start = Math.max(0, endIndex - period + 1);
+  let min = Infinity;
+  for (let i = start; i <= endIndex; i += 1) {
+    if (candles[i].low < min) min = candles[i].low;
+  }
+  return min;
+}
+
+function calcIchimoku(candles) {
+  if (!candles || candles.length < 52) return null;
+
+  const endIndex = candles.length - 1;
+
+  const tenkanHigh = highestHigh(candles, 9, endIndex);
+  const tenkanLow = lowestLow(candles, 9, endIndex);
+  const tenkan = (tenkanHigh + tenkanLow) / 2;
+
+  const kijunHigh = highestHigh(candles, 26, endIndex);
+  const kijunLow = lowestLow(candles, 26, endIndex);
+  const kijun = (kijunHigh + kijunLow) / 2;
+
+  const spanBHigh = highestHigh(candles, 52, endIndex);
+  const spanBLow = lowestLow(candles, 52, endIndex);
+  const senkouB = (spanBHigh + spanBLow) / 2;
+
+  const senkouA = (tenkan + kijun) / 2;
+
+  return {
+    tenkan,
+    kijun,
+    senkouA,
+    senkouB,
+    cloudTop: Math.max(senkouA, senkouB),
+    cloudBottom: Math.min(senkouA, senkouB)
+  };
+}
+
 function mapToKrakenPair(symbol) {
   const clean = symbol.toUpperCase();
 
@@ -110,11 +156,6 @@ function mapToKrakenPair(symbol) {
   if (clean.endsWith("USDT")) {
     const base = clean.slice(0, -4);
     return `${base}USDT`;
-  }
-
-  if (clean.endsWith("USD")) {
-    const base = clean.slice(0, -3);
-    return base === "BTC" ? "XBTUSD" : `${base}USD`;
   }
 
   return clean;
@@ -179,7 +220,7 @@ async function fetchKlines(krakenPair, timeframe) {
     throw new Error("Aucune bougie Kraken trouvée");
   }
 
-  return data.result[pairKey].map((row) => ({
+  const rows = data.result[pairKey].map((row) => ({
     openTime: row[0],
     open: Number(row[1]),
     high: Number(row[2]),
@@ -187,6 +228,8 @@ async function fetchKlines(krakenPair, timeframe) {
     close: Number(row[4]),
     volume: Number(row[6])
   }));
+
+  return rows.length > 1 ? rows.slice(0, -1) : rows;
 }
 
 function analyzeSingleTimeframe(candles) {
@@ -195,9 +238,10 @@ function analyzeSingleTimeframe(candles) {
   const ema50 = calcEma(closes, 50);
   const atr = calcAtr(candles, 14);
   const rsi = calcRsi(closes, 14);
+  const ichimoku = calcIchimoku(candles);
   const price = closes[closes.length - 1];
 
-  if (!price || !ema20 || !ema50 || !atr || !rsi) {
+  if (!price || !ema20 || !ema50 || !atr) {
     return {
       direction: "NEUTRAL",
       price: price || 0,
@@ -205,27 +249,39 @@ function analyzeSingleTimeframe(candles) {
       ema50: ema50 || 0,
       atr: atr || 0,
       rsi: rsi || 0,
+      ichimoku: null,
       score: 0
     };
   }
 
-  const bullish = price > ema20 && ema20 > ema50;
-  const bearish = price < ema20 && ema20 < ema50;
+  const bullishEma = price > ema20 && ema20 > ema50;
+  const bearishEma = price < ema20 && ema20 < ema50;
+
+  const bullishIchimoku =
+    ichimoku &&
+    price > ichimoku.cloudTop &&
+    ichimoku.tenkan > ichimoku.kijun;
+
+  const bearishIchimoku =
+    ichimoku &&
+    price < ichimoku.cloudBottom &&
+    ichimoku.tenkan < ichimoku.kijun;
 
   let direction = "NEUTRAL";
   let score = 40;
 
-  if (bullish && rsi >= 50 && rsi <= 70) {
+  if (bullishEma && bullishIchimoku && rsi >= 50 && rsi <= 70) {
     direction = "LONG";
-    score = 70;
-    if (rsi >= 54 && rsi <= 64) score += 8;
-  } else if (bearish && rsi >= 30 && rsi <= 50) {
+    score = 82;
+  } else if (bearishEma && bearishIchimoku && rsi >= 30 && rsi <= 50) {
     direction = "SHORT";
-    score = 70;
-    if (rsi >= 36 && rsi <= 46) score += 8;
-  } else {
-    if (rsi > 70 || rsi < 30) score = 35;
-    else score = 45;
+    score = 82;
+  } else if (bullishEma && rsi >= 50 && rsi <= 70) {
+    direction = "LONG";
+    score = 62;
+  } else if (bearishEma && rsi >= 30 && rsi <= 50) {
+    direction = "SHORT";
+    score = 62;
   }
 
   return {
@@ -235,6 +291,7 @@ function analyzeSingleTimeframe(candles) {
     ema50,
     atr,
     rsi,
+    ichimoku,
     score
   };
 }
@@ -248,10 +305,6 @@ function buildConfluenceDecision(price, change24h, byTf) {
     .filter((tf) => byTf[tf]?.direction === "SHORT")
     .reduce((sum, tf) => sum + TF_WEIGHTS[tf], 0);
 
-  const neutralWeight = ANALYSIS_TFS
-    .filter((tf) => byTf[tf]?.direction === "NEUTRAL")
-    .reduce((sum, tf) => sum + TF_WEIGHTS[tf], 0);
-
   const h1 = byTf["1h"]?.direction;
   const h4 = byTf["4h"]?.direction;
   const d1 = byTf["1d"]?.direction;
@@ -259,6 +312,10 @@ function buildConfluenceDecision(price, change24h, byTf) {
   const m15 = byTf["15m"]?.direction;
 
   const atrRef = byTf["1h"]?.atr || byTf["4h"]?.atr || price * 0.01;
+  const kijunRef =
+    byTf["1h"]?.ichimoku?.kijun ||
+    byTf["4h"]?.ichimoku?.kijun ||
+    0;
 
   let decision = "NO_TRADE";
   let reason = "Confluence insuffisante entre les timeframes.";
@@ -266,6 +323,8 @@ function buildConfluenceDecision(price, change24h, byTf) {
   let confidence = Math.max(longWeight, shortWeight) * 5;
   let leverage = "-";
   let entry = price;
+  let entryMin = price;
+  let entryMax = price;
   let stopLoss = 0;
   let takeProfit = 0;
   let rr = 0;
@@ -290,32 +349,30 @@ function buildConfluenceDecision(price, change24h, byTf) {
 
   if (strongLong) {
     decision = "LONG";
-    stopLoss = price - atrRef * 1.2;
-    takeProfit = price + atrRef * 2.4;
+    entryMin = Math.min(price, byTf["15m"]?.ema20 || price, byTf["1h"]?.ema20 || price);
+    entryMax = price;
+    stopLoss = kijunRef ? Math.min(kijunRef, price - atrRef * 1.1) : price - atrRef * 1.2;
+    takeProfit = price + atrRef * 2.8;
     rr = (takeProfit - entry) / (entry - stopLoss);
     reason =
-      "Confluence haussière validée sur 1h, 4h et 1d, avec 15m non contradictoire.";
-    score = Math.min(92, 72 + longWeight * 2);
-    confidence = Math.min(90, 68 + longWeight * 2);
+      "Confluence haussière validée avec alignement EMA et Ichimoku sur les horizons clés.";
+    score = Math.min(96, 78 + longWeight * 2);
+    confidence = Math.min(94, 72 + longWeight * 2);
     leverage = w1 === "LONG" ? "x2" : "x1";
   } else if (strongShort) {
     decision = "SHORT";
-    stopLoss = price + atrRef * 1.2;
-    takeProfit = price - atrRef * 2.4;
+    entryMin = price;
+    entryMax = Math.max(price, byTf["15m"]?.ema20 || price, byTf["1h"]?.ema20 || price);
+    stopLoss = kijunRef ? Math.max(kijunRef, price + atrRef * 1.1) : price + atrRef * 1.2;
+    takeProfit = price - atrRef * 2.8;
     rr = (entry - takeProfit) / (stopLoss - entry);
     reason =
-      "Confluence baissière validée sur 1h, 4h et 1d, avec 15m non contradictoire.";
-    score = Math.min(92, 72 + shortWeight * 2);
-    confidence = Math.min(90, 68 + shortWeight * 2);
+      "Confluence baissière validée avec alignement EMA et Ichimoku sur les horizons clés.";
+    score = Math.min(96, 78 + shortWeight * 2);
+    confidence = Math.min(94, 72 + shortWeight * 2);
     leverage = w1 === "SHORT" ? "x2" : "x1";
   } else {
-    if (longWeight > shortWeight && shortWeight >= 3) {
-      reason = "Biais haussier, mais des timeframes importants restent contradictoires.";
-    } else if (shortWeight > longWeight && longWeight >= 3) {
-      reason = "Biais baissier, mais des timeframes importants restent contradictoires.";
-    } else if (neutralWeight >= 6) {
-      reason = "Marché trop neutre sur plusieurs horizons.";
-    } else if (Math.abs(change24h) < 1) {
+    if (Math.abs(change24h) < 1) {
       reason = "Variation journalière trop faible pour un setup convaincant.";
     }
   }
@@ -325,6 +382,8 @@ function buildConfluenceDecision(price, change24h, byTf) {
     score,
     confidence,
     entry: Number(entry.toFixed(6)),
+    entryMin: Number(entryMin.toFixed(6)),
+    entryMax: Number(entryMax.toFixed(6)),
     stopLoss: Number(stopLoss.toFixed(6)),
     takeProfit: Number(takeProfit.toFixed(6)),
     leverage,
@@ -333,7 +392,7 @@ function buildConfluenceDecision(price, change24h, byTf) {
     confluence: {
       longWeight,
       shortWeight,
-      neutralWeight
+      neutralWeight: ANALYSIS_TFS.length * 3 - longWeight - shortWeight
     }
   };
 }
@@ -394,7 +453,8 @@ export async function GET(request) {
               ema20: byTf["1h"]?.ema20 || 0,
               ema50: byTf["1h"]?.ema50 || 0,
               atr: byTf["1h"]?.atr || 0,
-              rsi: byTf["1h"]?.rsi || 0
+              rsi: byTf["1h"]?.rsi || 0,
+              ichimoku: byTf["1h"]?.ichimoku || null
             },
             ...confluenceDecision
           };
