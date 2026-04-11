@@ -11,6 +11,18 @@ const DEFAULT_ASSETS = [
 
 const DISPLAY_TFS = ["15m", "1h", "4h", "1d", "1w"];
 
+const TRADE_STYLES = [
+  { value: "short", label: "Court terme" },
+  { value: "medium", label: "Moyen terme" },
+  { value: "long", label: "Long terme" }
+];
+
+const RISK_MODES = [
+  { value: "conservative", label: "Conservateur" },
+  { value: "moderate", label: "Modéré" },
+  { value: "aggressive", label: "Agressif" }
+];
+
 function buildEmptyAsset(symbol, enabled = true) {
   return {
     symbol,
@@ -26,6 +38,8 @@ function buildEmptyAsset(symbol, enabled = true) {
     stopLoss: 0,
     takeProfit: 0,
     leverage: "-",
+    leverageValue: 0,
+    liquidationPrice: 0,
     rr: 0,
     reason: "En attente d'analyse.",
     lastAlert: "Aucune",
@@ -114,6 +128,7 @@ function buildSignalSignature(item) {
     best.decision,
     best.tradeTf,
     best.contextTf,
+    best.riskMode,
     best.entryMin,
     best.entryMax
   ].join("|");
@@ -137,6 +152,8 @@ export default function Page() {
   const [newAsset, setNewAsset] = useState("");
   const [search, setSearch] = useState("");
   const [alertsEnabled, setAlertsEnabled] = useState(true);
+  const [tradeStyle, setTradeStyle] = useState("medium");
+  const [riskMode, setRiskMode] = useState("moderate");
   const [marketLoading, setMarketLoading] = useState(false);
   const [marketError, setMarketError] = useState("");
   const [lastSync, setLastSync] = useState(null);
@@ -204,7 +221,7 @@ export default function Page() {
       const res = await fetch(
         `/api/market?symbols=${encodeURIComponent(
           enabledAssets.map((a) => a.symbol).join(",")
-        )}`,
+        )}&tradeStyle=${encodeURIComponent(tradeStyle)}&riskMode=${encodeURIComponent(riskMode)}`,
         { cache: "no-store" }
       );
 
@@ -229,6 +246,8 @@ export default function Page() {
 
         if (!changedSignal && !enoughTimePassed) continue;
 
+        const s = item.bestSetup;
+
         await fetch("/api/alerts/test", {
           method: "POST",
           headers: {
@@ -236,13 +255,13 @@ export default function Page() {
           },
           body: JSON.stringify({
             symbol: item.symbol,
-            side: item.bestSetup.decision,
-            entry: item.bestSetup.entry,
-            stopLoss: item.bestSetup.stopLoss,
-            takeProfit: item.bestSetup.takeProfit,
-            leverage: item.bestSetup.leverage,
-            rr: item.bestSetup.rr,
-            reason: `${item.bestSetup.label} — ${item.bestSetup.reason}`
+            side: s.decision,
+            entry: s.entry,
+            stopLoss: s.stopLoss,
+            takeProfit: s.takeProfit,
+            leverage: s.leverage,
+            rr: s.rr,
+            reason: `${s.label} — ${s.tradeTf} + ${s.contextTf} — ${s.reason}`
           })
         });
 
@@ -280,6 +299,8 @@ export default function Page() {
             stopLoss: live.stopLoss,
             takeProfit: live.takeProfit,
             leverage: live.leverage,
+            leverageValue: live.leverageValue,
+            liquidationPrice: live.liquidationPrice,
             rr: live.rr,
             reason: live.reason,
             indicators: live.indicators || asset.indicators,
@@ -312,7 +333,7 @@ export default function Page() {
     }, 30000);
 
     return () => clearInterval(interval);
-  }, [mounted, assets.length, alertsEnabled]);
+  }, [mounted, assets.length, alertsEnabled, tradeStyle, riskMode]);
 
   function addAsset() {
     const symbol = newAsset.trim().toUpperCase();
@@ -375,7 +396,7 @@ export default function Page() {
           takeProfit: s.takeProfit,
           leverage: s.leverage,
           rr: s.rr,
-          reason: `${s.label} — ${s.reason}`
+          reason: `${s.label} — ${s.tradeTf} + ${s.contextTf} — ${s.reason}`
         })
       });
 
@@ -418,12 +439,38 @@ export default function Page() {
             <div className="pill">Trading Signal Control Center</div>
             <h1>Scanner crypto à setups multi-timeframe</h1>
             <p>
-              Les trades sont désormais proposés par couples de timeframes
-              cohérents, au lieu d’exiger un alignement parfait partout.
+              Choisis ton horizon de trade et ton niveau de risque. Le setup
+              s’affiche seulement s’il respecte la stratégie.
             </p>
           </div>
 
           <div className="hero-actions">
+            <select
+              className="select"
+              value={tradeStyle}
+              onChange={(e) => setTradeStyle(e.target.value)}
+              style={{ width: 180 }}
+            >
+              {TRADE_STYLES.map((s) => (
+                <option key={s.value} value={s.value}>
+                  {s.label}
+                </option>
+              ))}
+            </select>
+
+            <select
+              className="select"
+              value={riskMode}
+              onChange={(e) => setRiskMode(e.target.value)}
+              style={{ width: 160 }}
+            >
+              {RISK_MODES.map((s) => (
+                <option key={s.value} value={s.value}>
+                  {s.label}
+                </option>
+              ))}
+            </select>
+
             <label className="toggle">
               <span>Alertes</span>
               <input
@@ -432,6 +479,7 @@ export default function Page() {
                 onChange={(e) => setAlertsEnabled(e.target.checked)}
               />
             </label>
+
             <button className="primary-btn" onClick={refreshMarket}>
               {marketLoading ? "Actualisation..." : "Actualiser les prix"}
             </button>
@@ -517,7 +565,7 @@ export default function Page() {
                       <div className="asset-meta">
                         {asset.bestSetup
                           ? `${asset.bestSetup.tradeTf} + ${asset.bestSetup.contextTf}`
-                          : "Aucun setup"}
+                          : "Pas de trade"}
                       </div>
                     </div>
                     <span className={`badge ${asset.decision.toLowerCase()}`}>
@@ -585,8 +633,7 @@ export default function Page() {
           <section className="panel">
             <h2>{selectedAsset?.symbol || "Aucun actif"}</h2>
             <p className="muted">
-              Un actif peut avoir plusieurs setups intéressants. Le meilleur est
-              affiché en priorité.
+              Le setup n’apparaît que s’il respecte la stratégie sélectionnée.
             </p>
 
             <div className="details-grid">
@@ -595,16 +642,16 @@ export default function Page() {
                 <div className="detail-value">{formatPrice(selectedAsset?.price)}</div>
               </div>
               <div className="detail-card">
-                <div className="small-label">Zone d’entrée min</div>
+                <div className="small-label">Entrée min</div>
                 <div className="detail-value">{formatPrice(selectedAsset?.entryMin)}</div>
               </div>
               <div className="detail-card">
-                <div className="small-label">Zone d’entrée max</div>
+                <div className="small-label">Entrée max</div>
                 <div className="detail-value">{formatPrice(selectedAsset?.entryMax)}</div>
               </div>
               <div className="detail-card">
-                <div className="small-label">Take profit</div>
-                <div className="detail-value">{formatPrice(selectedAsset?.takeProfit)}</div>
+                <div className="small-label">Liquidation estimée</div>
+                <div className="detail-value">{formatPrice(selectedAsset?.liquidationPrice)}</div>
               </div>
             </div>
 
@@ -652,11 +699,21 @@ export default function Page() {
                     </div>
 
                     <div className="metric-block">
+                      <div className="small-label">Take profit</div>
+                      <div>{formatPrice(selectedAsset.bestSetup.takeProfit)}</div>
+                    </div>
+
+                    <div className="metric-block">
                       <div className="small-label">RR</div>
                       <div>{selectedAsset.bestSetup.rr}</div>
                     </div>
                   </>
-                ) : null}
+                ) : (
+                  <div className="metric-block">
+                    <div className="small-label">Setup retenu</div>
+                    <div>Pas de trade</div>
+                  </div>
+                )}
               </div>
 
               <div className="summary-card">
@@ -672,6 +729,10 @@ export default function Page() {
                 <div className="info-row">
                   <span>RR estimé</span>
                   <strong>{selectedAsset?.rr || 0}</strong>
+                </div>
+                <div className="info-row">
+                  <span>Liquidation estimée</span>
+                  <strong>{formatPrice(selectedAsset?.liquidationPrice)}</strong>
                 </div>
                 <div className="info-row">
                   <span>Dernière alerte</span>
@@ -721,34 +782,50 @@ export default function Page() {
                       >
                         {decisionLabel(setup.decision)}
                       </div>
+
                       <div className="small-label">Timeframes</div>
                       <div>{setup.tradeTf} + {setup.contextTf}</div>
+
                       <div className="small-label" style={{ marginTop: 8 }}>
                         Entrée min
                       </div>
                       <div>{formatPrice(setup.entryMin)}</div>
+
                       <div className="small-label" style={{ marginTop: 8 }}>
                         Entrée max
                       </div>
                       <div>{formatPrice(setup.entryMax)}</div>
+
                       <div className="small-label" style={{ marginTop: 8 }}>
                         Stop
                       </div>
                       <div>{formatPrice(setup.stopLoss)}</div>
+
                       <div className="small-label" style={{ marginTop: 8 }}>
                         TP
                       </div>
                       <div>{formatPrice(setup.takeProfit)}</div>
+
                       <div className="small-label" style={{ marginTop: 8 }}>
                         RR
                       </div>
                       <div>{setup.rr}</div>
+
+                      <div className="small-label" style={{ marginTop: 8 }}>
+                        Levier max conseillé
+                      </div>
+                      <div>{setup.leverage}</div>
+
+                      <div className="small-label" style={{ marginTop: 8 }}>
+                        Liquidation estimée
+                      </div>
+                      <div>{formatPrice(setup.liquidationPrice)}</div>
                     </div>
                   ))}
                 </div>
               ) : (
                 <div className="panel" style={{ padding: 16 }}>
-                  Aucun setup exploitable détecté actuellement.
+                  Pas de trade sur le style / risque sélectionné.
                 </div>
               )}
             </div>
