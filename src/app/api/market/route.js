@@ -1,11 +1,49 @@
 const ANALYSIS_TFS = ["15m", "1h", "4h", "1d", "1w"];
 
-const TF_PAIRS = [
-  { tradeTf: "15m", contextTf: "1h", label: "Scalp / intraday" },
-  { tradeTf: "1h", contextTf: "4h", label: "Intraday / swing court" },
-  { tradeTf: "4h", contextTf: "1d", label: "Swing" },
-  { tradeTf: "1d", contextTf: "1w", label: "Position" }
-];
+const STYLE_CONFIG = {
+  short: {
+    label: "Court terme",
+    allowedPairs: [
+      { tradeTf: "15m", contextTf: "1h", label: "Scalp / intraday" },
+      { tradeTf: "1h", contextTf: "4h", label: "Intraday / swing court" }
+    ]
+  },
+  medium: {
+    label: "Moyen terme",
+    allowedPairs: [
+      { tradeTf: "1h", contextTf: "4h", label: "Intraday / swing court" },
+      { tradeTf: "4h", contextTf: "1d", label: "Swing" }
+    ]
+  },
+  long: {
+    label: "Long terme",
+    allowedPairs: [
+      { tradeTf: "4h", contextTf: "1d", label: "Swing" },
+      { tradeTf: "1d", contextTf: "1w", label: "Position" }
+    ]
+  }
+};
+
+const RISK_CONFIG = {
+  conservative: {
+    rrMin: 2.0,
+    stopAtr: 1.0,
+    tpAtr: 2.4,
+    liquidationBuffer: 3.5
+  },
+  moderate: {
+    rrMin: 1.6,
+    stopAtr: 1.2,
+    tpAtr: 2.6,
+    liquidationBuffer: 2.5
+  },
+  aggressive: {
+    rrMin: 1.3,
+    stopAtr: 1.5,
+    tpAtr: 2.8,
+    liquidationBuffer: 1.8
+  }
+};
 
 function calcEma(values, period) {
   if (!values.length || values.length < period) return null;
@@ -289,9 +327,36 @@ function analyzeSingleTimeframe(candles) {
   };
 }
 
-function buildSetupFromPair(pair, byTf, currentPrice) {
+function estimateLiquidationPrice(side, entry, leverage) {
+  if (!entry || !leverage || leverage <= 0) return 0;
+
+  if (side === "LONG") {
+    return entry * (1 - 1 / leverage);
+  }
+
+  return entry * (1 + 1 / leverage);
+}
+
+function maxLeverageFromStop(side, entry, stopLoss, riskMode) {
+  if (!entry || !stopLoss) return 0;
+
+  const stopDistancePct =
+    side === "LONG"
+      ? (entry - stopLoss) / entry
+      : (stopLoss - entry) / entry;
+
+  if (stopDistancePct <= 0) return 0;
+
+  const buffer = RISK_CONFIG[riskMode].liquidationBuffer;
+  const leverage = 1 / (stopDistancePct * buffer);
+
+  return Math.max(1, Math.min(10, leverage));
+}
+
+function buildSetupFromPair(pair, byTf, currentPrice, riskMode) {
   const trade = byTf[pair.tradeTf];
   const context = byTf[pair.contextTf];
+  const risk = RISK_CONFIG[riskMode];
 
   if (!trade || !context) return null;
   if (!trade.direction || !context.direction) return null;
@@ -303,11 +368,11 @@ function buildSetupFromPair(pair, byTf, currentPrice) {
   const tradeIchi = trade.ichimoku;
   const contextIchi = context.ichimoku;
 
+  let entry = currentPrice;
   let entryMin = currentPrice;
   let entryMax = currentPrice;
   let stopLoss = 0;
   let takeProfit = 0;
-  let leverage = "x1";
 
   if (side === "LONG") {
     const lowerZoneCandidates = [
@@ -323,11 +388,11 @@ function buildSetupFromPair(pair, byTf, currentPrice) {
     const stopCandidates = [
       tradeIchi?.kijun,
       contextIchi?.cloudBottom,
-      currentPrice - tradeAtr * 1.2
+      currentPrice - tradeAtr * risk.stopAtr
     ].filter((v) => Number.isFinite(v));
 
     stopLoss = Math.min(...stopCandidates);
-    takeProfit = currentPrice + tradeAtr * 2.6;
+    takeProfit = currentPrice + tradeAtr * risk.tpAtr;
   } else {
     const upperZoneCandidates = [
       currentPrice,
@@ -342,19 +407,25 @@ function buildSetupFromPair(pair, byTf, currentPrice) {
     const stopCandidates = [
       tradeIchi?.kijun,
       contextIchi?.cloudTop,
-      currentPrice + tradeAtr * 1.2
+      currentPrice + tradeAtr * risk.stopAtr
     ].filter((v) => Number.isFinite(v));
 
     stopLoss = Math.max(...stopCandidates);
-    takeProfit = currentPrice - tradeAtr * 2.6;
+    takeProfit = currentPrice - tradeAtr * risk.tpAtr;
   }
 
   const rr =
     side === "LONG"
-      ? (takeProfit - currentPrice) / (currentPrice - stopLoss)
-      : (currentPrice - takeProfit) / (stopLoss - currentPrice);
+      ? (takeProfit - entry) / (entry - stopLoss)
+      : (entry - takeProfit) / (stopLoss - entry);
 
-  if (!Number.isFinite(rr) || rr < 1.4) return null;
+  if (!Number.isFinite(rr) || rr < risk.rrMin) return null;
+
+  const leverageMax = maxLeverageFromStop(side, entry, stopLoss, riskMode);
+  const leverage = Math.max(1, Math.floor(leverageMax));
+  const liquidationPrice = estimateLiquidationPrice(side, entry, leverage);
+
+  if (!liquidationPrice) return null;
 
   const scoreBase = Math.round((trade.score + context.score) / 2);
   const score =
@@ -366,38 +437,38 @@ function buildSetupFromPair(pair, byTf, currentPrice) {
         (rr >= 2 ? 4 : 0)
     );
 
-  leverage =
-    pair.tradeTf === "15m" || pair.tradeTf === "1h"
-      ? "x2"
-      : "x1";
-
   const reason =
     side === "LONG"
-      ? `${pair.tradeTf} et ${pair.contextTf} concordent à l'achat avec EMA, RSI et contexte Ichimoku.`
-      : `${pair.tradeTf} et ${pair.contextTf} concordent à la vente avec EMA, RSI et contexte Ichimoku.`;
+      ? `${pair.tradeTf} et ${pair.contextTf} concordent à l'achat avec EMA, RSI, ATR et Ichimoku.`
+      : `${pair.tradeTf} et ${pair.contextTf} concordent à la vente avec EMA, RSI, ATR et Ichimoku.`;
 
   return {
-    setupId: `${pair.tradeTf}-${pair.contextTf}-${side}`,
+    setupId: `${pair.tradeTf}-${pair.contextTf}-${side}-${riskMode}`,
     label: pair.label,
     tradeTf: pair.tradeTf,
     contextTf: pair.contextTf,
     decision: side,
     score,
     confidence: Math.min(94, score - 2),
-    entry: Number(currentPrice.toFixed(6)),
+    entry: Number(entry.toFixed(6)),
     entryMin: Number(entryMin.toFixed(6)),
     entryMax: Number(entryMax.toFixed(6)),
     stopLoss: Number(stopLoss.toFixed(6)),
     takeProfit: Number(takeProfit.toFixed(6)),
     rr: Number(rr.toFixed(2)),
-    leverage,
-    reason
+    leverage: `x${leverage}`,
+    leverageValue: leverage,
+    liquidationPrice: Number(liquidationPrice.toFixed(6)),
+    reason,
+    riskMode
   };
 }
 
-function buildAssetDecision(price, change24h, byTf) {
-  const setups = TF_PAIRS
-    .map((pair) => buildSetupFromPair(pair, byTf, price))
+function buildAssetDecision(price, change24h, byTf, tradeStyle, riskMode) {
+  const style = STYLE_CONFIG[tradeStyle] || STYLE_CONFIG.medium;
+
+  const setups = style.allowedPairs
+    .map((pair) => buildSetupFromPair(pair, byTf, price, riskMode))
     .filter(Boolean)
     .sort((a, b) => b.score - a.score || b.rr - a.rr);
 
@@ -412,11 +483,13 @@ function buildAssetDecision(price, change24h, byTf) {
       stopLoss: 0,
       takeProfit: 0,
       leverage: "-",
+      leverageValue: 0,
+      liquidationPrice: 0,
       rr: 0,
       reason:
         Math.abs(change24h) < 1
-          ? "Aucun setup propre détecté pour le moment. Marché plutôt neutre."
-          : "Aucun couple de timeframes n'offre actuellement un setup suffisamment cohérent.",
+          ? "Pas de trade : marché trop neutre pour le style choisi."
+          : "Pas de trade : aucun setup cohérent sur les timeframes sélectionnés.",
       bestSetup: null,
       setups: []
     };
@@ -434,6 +507,8 @@ function buildAssetDecision(price, change24h, byTf) {
     stopLoss: best.stopLoss,
     takeProfit: best.takeProfit,
     leverage: best.leverage,
+    leverageValue: best.leverageValue,
+    liquidationPrice: best.liquidationPrice,
     rr: best.rr,
     reason: best.reason,
     bestSetup: best,
@@ -445,6 +520,8 @@ export async function GET(request) {
   try {
     const { searchParams } = new URL(request.url);
     const symbolsParam = searchParams.get("symbols") || "";
+    const tradeStyle = searchParams.get("tradeStyle") || "medium";
+    const riskMode = searchParams.get("riskMode") || "moderate";
 
     const symbols = symbolsParam
       .split(",")
@@ -481,7 +558,13 @@ export async function GET(request) {
           const change24h =
             openToday && price ? ((price - openToday) / openToday) * 100 : 0;
 
-          const assetDecision = buildAssetDecision(price, change24h, byTf);
+          const assetDecision = buildAssetDecision(
+            price,
+            change24h,
+            byTf,
+            tradeStyle,
+            riskMode
+          );
 
           return {
             symbol,
@@ -500,6 +583,8 @@ export async function GET(request) {
               rsi: byTf["1h"]?.rsi || 0,
               ichimoku: byTf["1h"]?.ichimoku || null
             },
+            tradeStyle,
+            riskMode,
             ...assetDecision
           };
         } catch (error) {
@@ -516,6 +601,8 @@ export async function GET(request) {
       ok: true,
       updatedAt: Date.now(),
       analysisTimeframes: ANALYSIS_TFS,
+      tradeStyle,
+      riskMode,
       items
     });
   } catch (error) {
