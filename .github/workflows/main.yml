@@ -1,0 +1,65 @@
+name: Crypto Trading Alerts — Surveillance continue
+
+on:
+  # Déclenchement automatique toutes les 5 minutes (minimum GitHub Actions)
+  schedule:
+    - cron: "*/5 * * * *"
+
+  # Possibilité de lancer manuellement depuis l'onglet Actions de GitHub
+  workflow_dispatch:
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+
+    steps:
+      # 1. Récupérer le code
+      - name: Checkout du dépôt
+        uses: actions/checkout@v4
+
+      # 2. Restaurer l'état des alertes (anti-doublon entre runs)
+      - name: Restaurer le cache des alertes
+        uses: actions/cache@v4
+        with:
+          path: state/alerts.json
+          key: alerts-state-${{ github.run_id }}
+          restore-keys: |
+            alerts-state-
+
+      # 3. Installer Python 3.11
+      - name: Configurer Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      # 4. Installer les dépendances
+      - name: Installer les dépendances
+        run: pip install -r requirements.txt
+
+      # 5. Lancer l'analyse
+      - name: Lancer l'analyse crypto
+        env:
+          EMAIL_SENDER:    ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD:  ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECIPIENT: ${{ secrets.EMAIL_RECIPIENT }}
+        run: python main.py
+
+      # 6. Sauvegarder l'état des alertes pour le prochain run
+      - name: Sauvegarder le cache des alertes
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state/alerts.json
+          key: alerts-state-${{ github.run_id }}
+
+      # 7. En cas d'échec, notifier dans les logs GitHub Actions
+      - name: Notification d'échec
+        if: failure()
+        run: |
+          echo "❌ L'analyse a échoué. Vérifiez les logs ci-dessus."
+          echo "Causes fréquentes :"
+          echo "  - Variables secrets manquantes (EMAIL_SENDER, EMAIL_PASSWORD, etc.)"
+          echo "  - API CoinGecko ou Yahoo Finance temporairement indisponible"
+          echo "  - Erreur de code — ouvrir une issue sur le dépôt"
