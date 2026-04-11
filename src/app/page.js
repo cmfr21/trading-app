@@ -61,7 +61,8 @@ function formatPrice(value) {
   if (
     value === null ||
     value === undefined ||
-    Number.isNaN(Number(value))
+    Number.isNaN(Number(value)) ||
+    Number(value) === 0
   ) {
     return "-";
   }
@@ -149,6 +150,7 @@ function hasIchimoku(tfData) {
 export default function Page() {
   const [assets, setAssets] = useState([]);
   const [selected, setSelected] = useState("BTCUSDT");
+  const [selectedSetupId, setSelectedSetupId] = useState("");
   const [newAsset, setNewAsset] = useState("");
   const [search, setSearch] = useState("");
   const [alertsEnabled, setAlertsEnabled] = useState(true);
@@ -190,6 +192,30 @@ export default function Page() {
   const selectedAsset = useMemo(() => {
     return assets.find((a) => a.symbol === selected) || assets[0] || null;
   }, [assets, selected]);
+
+  const activeSetup = useMemo(() => {
+    if (!selectedAsset) return null;
+    if (!selectedAsset.setups?.length) return null;
+
+    if (selectedSetupId) {
+      const found = selectedAsset.setups.find((s) => s.setupId === selectedSetupId);
+      if (found) return found;
+    }
+
+    return selectedAsset.bestSetup || selectedAsset.setups[0] || null;
+  }, [selectedAsset, selectedSetupId]);
+
+  useEffect(() => {
+    if (!selectedAsset?.setups?.length) {
+      setSelectedSetupId("");
+      return;
+    }
+
+    const exists = selectedAsset.setups.some((s) => s.setupId === selectedSetupId);
+    if (!exists) {
+      setSelectedSetupId(selectedAsset.bestSetup?.setupId || selectedAsset.setups[0].setupId);
+    }
+  }, [selectedAsset]);
 
   const stats = useMemo(() => {
     const enabled = assets.filter((a) => a.enabled).length;
@@ -376,12 +402,12 @@ export default function Page() {
 
   async function sendTestAlert() {
     try {
-      if (!selectedAsset || !selectedAsset.bestSetup) return;
+      if (!selectedAsset || !activeSetup) return;
 
       setSendingAlert(true);
       setAlertMessage("");
 
-      const s = selectedAsset.bestSetup;
+      const s = activeSetup;
 
       const res = await fetch("/api/alerts/test", {
         method: "POST",
@@ -439,38 +465,12 @@ export default function Page() {
             <div className="pill">Trading Signal Control Center</div>
             <h1>Scanner crypto à setups multi-timeframe</h1>
             <p>
-              Choisis ton horizon de trade et ton niveau de risque. Le setup
-              s’affiche seulement s’il respecte la stratégie.
+              Choisis ton horizon de trade et ton mode de risque. Un setup
+              n’apparaît que s’il respecte la stratégie.
             </p>
           </div>
 
           <div className="hero-actions">
-            <select
-              className="select"
-              value={tradeStyle}
-              onChange={(e) => setTradeStyle(e.target.value)}
-              style={{ width: 180 }}
-            >
-              {TRADE_STYLES.map((s) => (
-                <option key={s.value} value={s.value}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
-
-            <select
-              className="select"
-              value={riskMode}
-              onChange={(e) => setRiskMode(e.target.value)}
-              style={{ width: 160 }}
-            >
-              {RISK_MODES.map((s) => (
-                <option key={s.value} value={s.value}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
-
             <label className="toggle">
               <span>Alertes</span>
               <input
@@ -632,8 +632,38 @@ export default function Page() {
 
           <section className="panel">
             <h2>{selectedAsset?.symbol || "Aucun actif"}</h2>
+
+            <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+              <select
+                className="select"
+                value={tradeStyle}
+                onChange={(e) => setTradeStyle(e.target.value)}
+                style={{ width: 180 }}
+              >
+                {TRADE_STYLES.map((s) => (
+                  <option key={s.value} value={s.value}>
+                    {s.label}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                className="select"
+                value={riskMode}
+                onChange={(e) => setRiskMode(e.target.value)}
+                style={{ width: 160 }}
+              >
+                {RISK_MODES.map((s) => (
+                  <option key={s.value} value={s.value}>
+                    {s.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             <p className="muted">
-              Le setup n’apparaît que s’il respecte la stratégie sélectionnée.
+              Les menus sont maintenant liés au calcul. Si aucun setup ne respecte
+              la stratégie choisie, l’application affiche “Pas de trade”.
             </p>
 
             <div className="details-grid">
@@ -643,96 +673,75 @@ export default function Page() {
               </div>
               <div className="detail-card">
                 <div className="small-label">Entrée min</div>
-                <div className="detail-value">{formatPrice(selectedAsset?.entryMin)}</div>
+                <div className="detail-value">{formatPrice(activeSetup?.entryMin)}</div>
               </div>
               <div className="detail-card">
                 <div className="small-label">Entrée max</div>
-                <div className="detail-value">{formatPrice(selectedAsset?.entryMax)}</div>
+                <div className="detail-value">{formatPrice(activeSetup?.entryMax)}</div>
               </div>
               <div className="detail-card">
                 <div className="small-label">Liquidation estimée</div>
-                <div className="detail-value">{formatPrice(selectedAsset?.liquidationPrice)}</div>
+                <div className="detail-value">{formatPrice(activeSetup?.liquidationPrice)}</div>
               </div>
             </div>
 
             <div className="summary-grid">
               <div className="summary-card">
                 <h3>Résumé stratégique</h3>
-                <p>{selectedAsset?.reason}</p>
+                <p>{activeSetup?.reason || selectedAsset?.reason}</p>
 
                 <div className="metric-block">
                   <div className="small-label">
-                    Score setup : {selectedAsset?.score || 0}/100
+                    Score setup : {activeSetup?.score || selectedAsset?.score || 0}/100
                   </div>
                   <div className="progress">
                     <div
                       className="progress-bar"
-                      style={{ width: `${selectedAsset?.score || 0}%` }}
+                      style={{ width: `${activeSetup?.score || selectedAsset?.score || 0}%` }}
                     />
                   </div>
                 </div>
 
                 <div className="metric-block">
                   <div className="small-label">
-                    Confiance : {selectedAsset?.confidence || 0}/100
+                    Confiance : {activeSetup?.confidence || selectedAsset?.confidence || 0}/100
                   </div>
                   <div className="progress">
                     <div
                       className="progress-bar"
-                      style={{ width: `${selectedAsset?.confidence || 0}%` }}
+                      style={{ width: `${activeSetup?.confidence || selectedAsset?.confidence || 0}%` }}
                     />
                   </div>
                 </div>
 
-                {selectedAsset?.bestSetup ? (
-                  <>
-                    <div className="metric-block">
-                      <div className="small-label">Setup retenu</div>
-                      <div>
-                        {selectedAsset.bestSetup.label} — {selectedAsset.bestSetup.tradeTf} + {selectedAsset.bestSetup.contextTf}
-                      </div>
-                    </div>
+                <div className="metric-block">
+                  <div className="small-label">Stop loss</div>
+                  <div>{formatPrice(activeSetup?.stopLoss)}</div>
+                </div>
 
-                    <div className="metric-block">
-                      <div className="small-label">Stop loss</div>
-                      <div>{formatPrice(selectedAsset.bestSetup.stopLoss)}</div>
-                    </div>
-
-                    <div className="metric-block">
-                      <div className="small-label">Take profit</div>
-                      <div>{formatPrice(selectedAsset.bestSetup.takeProfit)}</div>
-                    </div>
-
-                    <div className="metric-block">
-                      <div className="small-label">RR</div>
-                      <div>{selectedAsset.bestSetup.rr}</div>
-                    </div>
-                  </>
-                ) : (
-                  <div className="metric-block">
-                    <div className="small-label">Setup retenu</div>
-                    <div>Pas de trade</div>
-                  </div>
-                )}
+                <div className="metric-block">
+                  <div className="small-label">Take profit</div>
+                  <div>{formatPrice(activeSetup?.takeProfit)}</div>
+                </div>
               </div>
 
               <div className="summary-card">
                 <h3>Verdict</h3>
-                <div className={`verdict ${selectedAsset?.decision.toLowerCase()}`}>
-                  {decisionLabel(selectedAsset?.decision)}
+                <div className={`verdict ${(activeSetup?.decision || selectedAsset?.decision || "NO_TRADE").toLowerCase()}`}>
+                  {decisionLabel(activeSetup?.decision || selectedAsset?.decision)}
                 </div>
 
                 <div className="info-row">
                   <span>Levier conseillé</span>
-                  <strong>{selectedAsset?.leverage}</strong>
+                  <strong>{activeSetup?.leverage || "-"}</strong>
                 </div>
                 <div className="info-row">
                   <span>RR estimé</span>
-                  <strong>{selectedAsset?.rr || 0}</strong>
+                  <strong>{activeSetup?.rr || 0}</strong>
                 </div>
                 <div className="info-row">
                   <span>Liquidation estimée</span>
-                  <strong>{formatPrice(selectedAsset?.liquidationPrice)}</strong>
+                  <strong>{formatPrice(activeSetup?.liquidationPrice)}</strong>
                 </div>
                 <div className="info-row">
                   <span>Dernière alerte</span>
@@ -743,10 +752,10 @@ export default function Page() {
                   <button
                     className="primary-btn"
                     onClick={sendTestAlert}
-                    disabled={!alertsEnabled || sendingAlert || !selectedAsset?.bestSetup}
+                    disabled={!alertsEnabled || sendingAlert || !activeSetup}
                     style={{
                       width: "100%",
-                      opacity: !alertsEnabled || sendingAlert || !selectedAsset?.bestSetup ? 0.6 : 1
+                      opacity: !alertsEnabled || sendingAlert || !activeSetup ? 0.6 : 1
                     }}
                   >
                     {sendingAlert ? "Envoi..." : "Envoyer une alerte Telegram"}
@@ -770,7 +779,18 @@ export default function Page() {
               {selectedAsset?.setups?.length ? (
                 <div className="details-grid">
                   {selectedAsset.setups.map((setup) => (
-                    <div className="detail-card" key={setup.setupId}>
+                    <div
+                      className="detail-card"
+                      key={setup.setupId}
+                      onClick={() => setSelectedSetupId(setup.setupId)}
+                      style={{
+                        cursor: "pointer",
+                        border:
+                          selectedSetupId === setup.setupId
+                            ? "1px solid rgba(34, 211, 238, 0.6)"
+                            : undefined
+                      }}
+                    >
                       <div className="small-label">{setup.label}</div>
                       <div
                         style={{
