@@ -108,28 +108,28 @@ export default function BacktestPage() {
           </section>
         ) : null}
 
-        {result ? (
+        {result?.summary ? (
           <>
             <section className="stats-grid">
               <div className="stat-card">
                 <div className="stat-label">Trades</div>
-                <div className="stat-value">{result.summary.totalTrades}</div>
+                <div className="stat-value">{result.summary.totalTrades ?? "-"}</div>
               </div>
               <div className="stat-card">
                 <div className="stat-label">Winrate</div>
-                <div className="stat-value">{result.summary.winRate}%</div>
+                <div className="stat-value">{result.summary.winRate ?? "-"}%</div>
               </div>
               <div className="stat-card">
                 <div className="stat-label">Gagnants</div>
-                <div className="stat-value">{result.summary.wins}</div>
+                <div className="stat-value">{result.summary.wins ?? "-"}</div>
               </div>
               <div className="stat-card">
                 <div className="stat-label">Perdants</div>
-                <div className="stat-value">{result.summary.losses}</div>
+                <div className="stat-value">{result.summary.losses ?? "-"}</div>
               </div>
               <div className="stat-card">
                 <div className="stat-label">PnL théorique</div>
-                <div className="stat-value">{result.summary.netR}R</div>
+                <div className="stat-value">{result.summary.netR ?? "-"R</div>
               </div>
             </section>
 
