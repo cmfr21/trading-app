@@ -1,12 +1,11 @@
 const ANALYSIS_TFS = ["15m", "1h", "4h", "1d", "1w"];
 
-const TF_WEIGHTS = {
-  "15m": 1,
-  "1h": 2,
-  "4h": 3,
-  "1d": 4,
-  "1w": 5
-};
+const TF_PAIRS = [
+  { tradeTf: "15m", contextTf: "1h", label: "Scalp / intraday" },
+  { tradeTf: "1h", contextTf: "4h", label: "Intraday / swing court" },
+  { tradeTf: "4h", contextTf: "1d", label: "Swing" },
+  { tradeTf: "1d", contextTf: "1w", label: "Position" }
+];
 
 function calcEma(values, period) {
   if (!values.length || values.length < period) return null;
@@ -260,28 +259,22 @@ function analyzeSingleTimeframe(candles) {
   const bullishIchimoku =
     ichimoku &&
     price > ichimoku.cloudTop &&
-    ichimoku.tenkan > ichimoku.kijun;
+    ichimoku.tenkan >= ichimoku.kijun;
 
   const bearishIchimoku =
     ichimoku &&
     price < ichimoku.cloudBottom &&
-    ichimoku.tenkan < ichimoku.kijun;
+    ichimoku.tenkan <= ichimoku.kijun;
 
   let direction = "NEUTRAL";
   let score = 40;
 
-  if (bullishEma && bullishIchimoku && rsi >= 50 && rsi <= 70) {
+  if (bullishEma && rsi >= 45 && rsi <= 72) {
     direction = "LONG";
-    score = 82;
-  } else if (bearishEma && bearishIchimoku && rsi >= 30 && rsi <= 50) {
+    score = bullishIchimoku ? 82 : 68;
+  } else if (bearishEma && rsi >= 28 && rsi <= 55) {
     direction = "SHORT";
-    score = 82;
-  } else if (bullishEma && rsi >= 50 && rsi <= 70) {
-    direction = "LONG";
-    score = 62;
-  } else if (bearishEma && rsi >= 30 && rsi <= 50) {
-    direction = "SHORT";
-    score = 62;
+    score = bearishIchimoku ? 82 : 68;
   }
 
   return {
@@ -296,104 +289,155 @@ function analyzeSingleTimeframe(candles) {
   };
 }
 
-function buildConfluenceDecision(price, change24h, byTf) {
-  const longWeight = ANALYSIS_TFS
-    .filter((tf) => byTf[tf]?.direction === "LONG")
-    .reduce((sum, tf) => sum + TF_WEIGHTS[tf], 0);
+function buildSetupFromPair(pair, byTf, currentPrice) {
+  const trade = byTf[pair.tradeTf];
+  const context = byTf[pair.contextTf];
 
-  const shortWeight = ANALYSIS_TFS
-    .filter((tf) => byTf[tf]?.direction === "SHORT")
-    .reduce((sum, tf) => sum + TF_WEIGHTS[tf], 0);
+  if (!trade || !context) return null;
+  if (!trade.direction || !context.direction) return null;
+  if (trade.direction === "NEUTRAL" || context.direction === "NEUTRAL") return null;
+  if (trade.direction !== context.direction) return null;
 
-  const h1 = byTf["1h"]?.direction;
-  const h4 = byTf["4h"]?.direction;
-  const d1 = byTf["1d"]?.direction;
-  const w1 = byTf["1w"]?.direction;
-  const m15 = byTf["15m"]?.direction;
+  const side = trade.direction;
+  const tradeAtr = trade.atr || currentPrice * 0.01;
+  const tradeIchi = trade.ichimoku;
+  const contextIchi = context.ichimoku;
 
-  const atrRef = byTf["1h"]?.atr || byTf["4h"]?.atr || price * 0.01;
-  const kijunRef =
-    byTf["1h"]?.ichimoku?.kijun ||
-    byTf["4h"]?.ichimoku?.kijun ||
-    0;
-
-  let decision = "NO_TRADE";
-  let reason = "Confluence insuffisante entre les timeframes.";
-  let score = Math.max(longWeight, shortWeight) * 6;
-  let confidence = Math.max(longWeight, shortWeight) * 5;
-  let leverage = "-";
-  let entry = price;
-  let entryMin = price;
-  let entryMax = price;
+  let entryMin = currentPrice;
+  let entryMax = currentPrice;
   let stopLoss = 0;
   let takeProfit = 0;
-  let rr = 0;
+  let leverage = "x1";
 
-  const strongLong =
-    h1 === "LONG" &&
-    h4 === "LONG" &&
-    d1 === "LONG" &&
-    w1 !== "SHORT" &&
-    m15 !== "SHORT" &&
-    longWeight >= 10 &&
-    shortWeight <= 1;
+  if (side === "LONG") {
+    const lowerZoneCandidates = [
+      currentPrice,
+      trade.ema20 || currentPrice,
+      tradeIchi?.kijun || currentPrice,
+      context.ema20 || currentPrice
+    ].filter((v) => Number.isFinite(v));
 
-  const strongShort =
-    h1 === "SHORT" &&
-    h4 === "SHORT" &&
-    d1 === "SHORT" &&
-    w1 !== "LONG" &&
-    m15 !== "LONG" &&
-    shortWeight >= 10 &&
-    longWeight <= 1;
+    entryMin = Math.min(...lowerZoneCandidates);
+    entryMax = currentPrice;
 
-  if (strongLong) {
-    decision = "LONG";
-    entryMin = Math.min(price, byTf["15m"]?.ema20 || price, byTf["1h"]?.ema20 || price);
-    entryMax = price;
-    stopLoss = kijunRef ? Math.min(kijunRef, price - atrRef * 1.1) : price - atrRef * 1.2;
-    takeProfit = price + atrRef * 2.8;
-    rr = (takeProfit - entry) / (entry - stopLoss);
-    reason =
-      "Confluence haussière validée avec alignement EMA et Ichimoku sur les horizons clés.";
-    score = Math.min(96, 78 + longWeight * 2);
-    confidence = Math.min(94, 72 + longWeight * 2);
-    leverage = w1 === "LONG" ? "x2" : "x1";
-  } else if (strongShort) {
-    decision = "SHORT";
-    entryMin = price;
-    entryMax = Math.max(price, byTf["15m"]?.ema20 || price, byTf["1h"]?.ema20 || price);
-    stopLoss = kijunRef ? Math.max(kijunRef, price + atrRef * 1.1) : price + atrRef * 1.2;
-    takeProfit = price - atrRef * 2.8;
-    rr = (entry - takeProfit) / (stopLoss - entry);
-    reason =
-      "Confluence baissière validée avec alignement EMA et Ichimoku sur les horizons clés.";
-    score = Math.min(96, 78 + shortWeight * 2);
-    confidence = Math.min(94, 72 + shortWeight * 2);
-    leverage = w1 === "SHORT" ? "x2" : "x1";
+    const stopCandidates = [
+      tradeIchi?.kijun,
+      contextIchi?.cloudBottom,
+      currentPrice - tradeAtr * 1.2
+    ].filter((v) => Number.isFinite(v));
+
+    stopLoss = Math.min(...stopCandidates);
+    takeProfit = currentPrice + tradeAtr * 2.6;
   } else {
-    if (Math.abs(change24h) < 1) {
-      reason = "Variation journalière trop faible pour un setup convaincant.";
-    }
+    const upperZoneCandidates = [
+      currentPrice,
+      trade.ema20 || currentPrice,
+      tradeIchi?.kijun || currentPrice,
+      context.ema20 || currentPrice
+    ].filter((v) => Number.isFinite(v));
+
+    entryMin = currentPrice;
+    entryMax = Math.max(...upperZoneCandidates);
+
+    const stopCandidates = [
+      tradeIchi?.kijun,
+      contextIchi?.cloudTop,
+      currentPrice + tradeAtr * 1.2
+    ].filter((v) => Number.isFinite(v));
+
+    stopLoss = Math.max(...stopCandidates);
+    takeProfit = currentPrice - tradeAtr * 2.6;
   }
 
+  const rr =
+    side === "LONG"
+      ? (takeProfit - currentPrice) / (currentPrice - stopLoss)
+      : (currentPrice - takeProfit) / (stopLoss - currentPrice);
+
+  if (!Number.isFinite(rr) || rr < 1.4) return null;
+
+  const scoreBase = Math.round((trade.score + context.score) / 2);
+  const score =
+    Math.min(
+      96,
+      scoreBase +
+        (trade.ichimoku ? 4 : 0) +
+        (context.ichimoku ? 4 : 0) +
+        (rr >= 2 ? 4 : 0)
+    );
+
+  leverage =
+    pair.tradeTf === "15m" || pair.tradeTf === "1h"
+      ? "x2"
+      : "x1";
+
+  const reason =
+    side === "LONG"
+      ? `${pair.tradeTf} et ${pair.contextTf} concordent à l'achat avec EMA, RSI et contexte Ichimoku.`
+      : `${pair.tradeTf} et ${pair.contextTf} concordent à la vente avec EMA, RSI et contexte Ichimoku.`;
+
   return {
-    decision,
+    setupId: `${pair.tradeTf}-${pair.contextTf}-${side}`,
+    label: pair.label,
+    tradeTf: pair.tradeTf,
+    contextTf: pair.contextTf,
+    decision: side,
     score,
-    confidence,
-    entry: Number(entry.toFixed(6)),
+    confidence: Math.min(94, score - 2),
+    entry: Number(currentPrice.toFixed(6)),
     entryMin: Number(entryMin.toFixed(6)),
     entryMax: Number(entryMax.toFixed(6)),
     stopLoss: Number(stopLoss.toFixed(6)),
     takeProfit: Number(takeProfit.toFixed(6)),
-    leverage,
     rr: Number(rr.toFixed(2)),
-    reason,
-    confluence: {
-      longWeight,
-      shortWeight,
-      neutralWeight: ANALYSIS_TFS.length * 3 - longWeight - shortWeight
-    }
+    leverage,
+    reason
+  };
+}
+
+function buildAssetDecision(price, change24h, byTf) {
+  const setups = TF_PAIRS
+    .map((pair) => buildSetupFromPair(pair, byTf, price))
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score || b.rr - a.rr);
+
+  if (!setups.length) {
+    return {
+      decision: "NO_TRADE",
+      score: 42,
+      confidence: 40,
+      entry: Number(price.toFixed(6)),
+      entryMin: Number(price.toFixed(6)),
+      entryMax: Number(price.toFixed(6)),
+      stopLoss: 0,
+      takeProfit: 0,
+      leverage: "-",
+      rr: 0,
+      reason:
+        Math.abs(change24h) < 1
+          ? "Aucun setup propre détecté pour le moment. Marché plutôt neutre."
+          : "Aucun couple de timeframes n'offre actuellement un setup suffisamment cohérent.",
+      bestSetup: null,
+      setups: []
+    };
+  }
+
+  const best = setups[0];
+
+  return {
+    decision: best.decision,
+    score: best.score,
+    confidence: best.confidence,
+    entry: best.entry,
+    entryMin: best.entryMin,
+    entryMax: best.entryMax,
+    stopLoss: best.stopLoss,
+    takeProfit: best.takeProfit,
+    leverage: best.leverage,
+    rr: best.rr,
+    reason: best.reason,
+    bestSetup: best,
+    setups
   };
 }
 
@@ -437,7 +481,7 @@ export async function GET(request) {
           const change24h =
             openToday && price ? ((price - openToday) / openToday) * 100 : 0;
 
-          const confluenceDecision = buildConfluenceDecision(price, change24h, byTf);
+          const assetDecision = buildAssetDecision(price, change24h, byTf);
 
           return {
             symbol,
@@ -456,7 +500,7 @@ export async function GET(request) {
               rsi: byTf["1h"]?.rsi || 0,
               ichimoku: byTf["1h"]?.ichimoku || null
             },
-            ...confluenceDecision
+            ...assetDecision
           };
         } catch (error) {
           return {
