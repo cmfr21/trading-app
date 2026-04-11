@@ -129,7 +129,7 @@ export default function BacktestPage() {
               </div>
               <div className="stat-card">
                 <div className="stat-label">PnL théorique</div>
-                <div className="stat-value">{result.summary.netR ?? "-"R</div>
+                <div className="stat-value">{(result?.summary?.netR ?? "-") + "R"}</div>
               </div>
             </section>
 
