@@ -21,6 +21,8 @@ function buildEmptyAsset(symbol, enabled = true) {
     score: 0,
     confidence: 0,
     entry: 0,
+    entryMin: 0,
+    entryMax: 0,
     stopLoss: 0,
     takeProfit: 0,
     leverage: "-",
@@ -28,11 +30,6 @@ function buildEmptyAsset(symbol, enabled = true) {
     reason: "En attente d'analyse.",
     lastAlert: "Aucune",
     signalSignature: "",
-    confluence: {
-      longWeight: 0,
-      shortWeight: 0,
-      neutralWeight: 0
-    },
     indicators: {
       ema20: 0,
       ema50: 0,
@@ -40,7 +37,9 @@ function buildEmptyAsset(symbol, enabled = true) {
       rsi: 0,
       ichimoku: {}
     },
-    timeframes: {}
+    timeframes: {},
+    setups: [],
+    bestSetup: null
   };
 }
 
@@ -108,14 +107,15 @@ function safeAssetsFromStorage() {
 }
 
 function buildSignalSignature(item) {
+  const best = item.bestSetup;
+  if (!best) return `${item.symbol}|NO_TRADE`;
   return [
     item.symbol,
-    item.decision,
-    item.timeframes?.["15m"]?.direction || "NEUTRAL",
-    item.timeframes?.["1h"]?.direction || "NEUTRAL",
-    item.timeframes?.["4h"]?.direction || "NEUTRAL",
-    item.timeframes?.["1d"]?.direction || "NEUTRAL",
-    item.timeframes?.["1w"]?.direction || "NEUTRAL"
+    best.decision,
+    best.tradeTf,
+    best.contextTf,
+    best.entryMin,
+    best.entryMax
   ].join("|");
 }
 
@@ -217,6 +217,7 @@ export default function Page() {
       for (const item of data.items) {
         if (!item.ok) continue;
         if (item.decision === "NO_TRADE") continue;
+        if (!item.bestSetup) continue;
         if (!alertsEnabled) continue;
 
         const signature = buildSignalSignature(item);
@@ -235,13 +236,13 @@ export default function Page() {
           },
           body: JSON.stringify({
             symbol: item.symbol,
-            side: item.decision,
-            entry: item.entry,
-            stopLoss: item.stopLoss,
-            takeProfit: item.takeProfit,
-            leverage: item.leverage,
-            rr: item.rr,
-            reason: item.reason
+            side: item.bestSetup.decision,
+            entry: item.bestSetup.entry,
+            stopLoss: item.bestSetup.stopLoss,
+            takeProfit: item.bestSetup.takeProfit,
+            leverage: item.bestSetup.leverage,
+            rr: item.bestSetup.rr,
+            reason: `${item.bestSetup.label} — ${item.bestSetup.reason}`
           })
         });
 
@@ -274,6 +275,8 @@ export default function Page() {
             score: live.score,
             confidence: live.confidence,
             entry: live.entry,
+            entryMin: live.entryMin,
+            entryMax: live.entryMax,
             stopLoss: live.stopLoss,
             takeProfit: live.takeProfit,
             leverage: live.leverage,
@@ -281,7 +284,8 @@ export default function Page() {
             reason: live.reason,
             indicators: live.indicators || asset.indicators,
             timeframes: live.timeframes || {},
-            confluence: live.confluence || asset.confluence,
+            setups: live.setups || [],
+            bestSetup: live.bestSetup || null,
             signalSignature: buildSignalSignature(live)
           };
         })
@@ -298,7 +302,6 @@ export default function Page() {
   useEffect(() => {
     if (!mounted || !assets.length) return;
     refreshMarket();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mounted]);
 
   useEffect(() => {
@@ -309,7 +312,6 @@ export default function Page() {
     }, 30000);
 
     return () => clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mounted, assets.length, alertsEnabled]);
 
   function addAsset() {
@@ -353,10 +355,12 @@ export default function Page() {
 
   async function sendTestAlert() {
     try {
-      if (!selectedAsset) return;
+      if (!selectedAsset || !selectedAsset.bestSetup) return;
 
       setSendingAlert(true);
       setAlertMessage("");
+
+      const s = selectedAsset.bestSetup;
 
       const res = await fetch("/api/alerts/test", {
         method: "POST",
@@ -365,13 +369,13 @@ export default function Page() {
         },
         body: JSON.stringify({
           symbol: selectedAsset.symbol,
-          side: selectedAsset.decision,
-          entry: selectedAsset.entry,
-          stopLoss: selectedAsset.stopLoss,
-          takeProfit: selectedAsset.takeProfit,
-          leverage: selectedAsset.leverage,
-          rr: selectedAsset.rr,
-          reason: selectedAsset.reason
+          side: s.decision,
+          entry: s.entry,
+          stopLoss: s.stopLoss,
+          takeProfit: s.takeProfit,
+          leverage: s.leverage,
+          rr: s.rr,
+          reason: `${s.label} — ${s.reason}`
         })
       });
 
@@ -412,10 +416,10 @@ export default function Page() {
         <header className="hero">
           <div>
             <div className="pill">Trading Signal Control Center</div>
-            <h1>Scanner crypto à confluence multi-timeframe</h1>
+            <h1>Scanner crypto à setups multi-timeframe</h1>
             <p>
-              Bougies clôturées, Ichimoku + EMA + RSI + ATR, et alertes
-              automatiques uniquement en cas de changement réel du signal.
+              Les trades sont désormais proposés par couples de timeframes
+              cohérents, au lieu d’exiger un alignement parfait partout.
             </p>
           </div>
 
@@ -510,7 +514,11 @@ export default function Page() {
                   <div className="asset-top">
                     <div>
                       <div className="asset-symbol">{asset.symbol}</div>
-                      <div className="asset-meta">Confluence multi-timeframe</div>
+                      <div className="asset-meta">
+                        {asset.bestSetup
+                          ? `${asset.bestSetup.tradeTf} + ${asset.bestSetup.contextTf}`
+                          : "Aucun setup"}
+                      </div>
                     </div>
                     <span className={`badge ${asset.decision.toLowerCase()}`}>
                       {decisionLabel(asset.decision)}
@@ -577,7 +585,8 @@ export default function Page() {
           <section className="panel">
             <h2>{selectedAsset?.symbol || "Aucun actif"}</h2>
             <p className="muted">
-              Confluence 15m / 1h / 4h / 1d / 1w avec validation Ichimoku.
+              Un actif peut avoir plusieurs setups intéressants. Le meilleur est
+              affiché en priorité.
             </p>
 
             <div className="details-grid">
@@ -586,12 +595,12 @@ export default function Page() {
                 <div className="detail-value">{formatPrice(selectedAsset?.price)}</div>
               </div>
               <div className="detail-card">
-                <div className="small-label">Entrée</div>
-                <div className="detail-value">{formatPrice(selectedAsset?.entry)}</div>
+                <div className="small-label">Zone d’entrée min</div>
+                <div className="detail-value">{formatPrice(selectedAsset?.entryMin)}</div>
               </div>
               <div className="detail-card">
-                <div className="small-label">Stop loss</div>
-                <div className="detail-value">{formatPrice(selectedAsset?.stopLoss)}</div>
+                <div className="small-label">Zone d’entrée max</div>
+                <div className="detail-value">{formatPrice(selectedAsset?.entryMax)}</div>
               </div>
               <div className="detail-card">
                 <div className="small-label">Take profit</div>
@@ -628,20 +637,26 @@ export default function Page() {
                   </div>
                 </div>
 
-                <div className="metric-block">
-                  <div className="small-label">Poids haussier</div>
-                  <div>{selectedAsset?.confluence?.longWeight || 0}</div>
-                </div>
+                {selectedAsset?.bestSetup ? (
+                  <>
+                    <div className="metric-block">
+                      <div className="small-label">Setup retenu</div>
+                      <div>
+                        {selectedAsset.bestSetup.label} — {selectedAsset.bestSetup.tradeTf} + {selectedAsset.bestSetup.contextTf}
+                      </div>
+                    </div>
 
-                <div className="metric-block">
-                  <div className="small-label">Poids baissier</div>
-                  <div>{selectedAsset?.confluence?.shortWeight || 0}</div>
-                </div>
+                    <div className="metric-block">
+                      <div className="small-label">Stop loss</div>
+                      <div>{formatPrice(selectedAsset.bestSetup.stopLoss)}</div>
+                    </div>
 
-                <div className="metric-block">
-                  <div className="small-label">Poids neutre</div>
-                  <div>{selectedAsset?.confluence?.neutralWeight || 0}</div>
-                </div>
+                    <div className="metric-block">
+                      <div className="small-label">RR</div>
+                      <div>{selectedAsset.bestSetup.rr}</div>
+                    </div>
+                  </>
+                ) : null}
               </div>
 
               <div className="summary-card">
@@ -667,10 +682,10 @@ export default function Page() {
                   <button
                     className="primary-btn"
                     onClick={sendTestAlert}
-                    disabled={!alertsEnabled || sendingAlert}
+                    disabled={!alertsEnabled || sendingAlert || !selectedAsset?.bestSetup}
                     style={{
                       width: "100%",
-                      opacity: !alertsEnabled || sendingAlert ? 0.6 : 1
+                      opacity: !alertsEnabled || sendingAlert || !selectedAsset?.bestSetup ? 0.6 : 1
                     }}
                   >
                     {sendingAlert ? "Envoi..." : "Envoyer une alerte Telegram"}
@@ -687,6 +702,55 @@ export default function Page() {
                   </button>
                 </div>
               </div>
+            </div>
+
+            <div style={{ marginTop: 24 }}>
+              <h3 style={{ marginBottom: 12 }}>Setups détectés</h3>
+              {selectedAsset?.setups?.length ? (
+                <div className="details-grid">
+                  {selectedAsset.setups.map((setup) => (
+                    <div className="detail-card" key={setup.setupId}>
+                      <div className="small-label">{setup.label}</div>
+                      <div
+                        style={{
+                          fontSize: 20,
+                          fontWeight: 700,
+                          marginTop: 6,
+                          marginBottom: 8
+                        }}
+                      >
+                        {decisionLabel(setup.decision)}
+                      </div>
+                      <div className="small-label">Timeframes</div>
+                      <div>{setup.tradeTf} + {setup.contextTf}</div>
+                      <div className="small-label" style={{ marginTop: 8 }}>
+                        Entrée min
+                      </div>
+                      <div>{formatPrice(setup.entryMin)}</div>
+                      <div className="small-label" style={{ marginTop: 8 }}>
+                        Entrée max
+                      </div>
+                      <div>{formatPrice(setup.entryMax)}</div>
+                      <div className="small-label" style={{ marginTop: 8 }}>
+                        Stop
+                      </div>
+                      <div>{formatPrice(setup.stopLoss)}</div>
+                      <div className="small-label" style={{ marginTop: 8 }}>
+                        TP
+                      </div>
+                      <div>{formatPrice(setup.takeProfit)}</div>
+                      <div className="small-label" style={{ marginTop: 8 }}>
+                        RR
+                      </div>
+                      <div>{setup.rr}</div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="panel" style={{ padding: 16 }}>
+                  Aucun setup exploitable détecté actuellement.
+                </div>
+              )}
             </div>
 
             <div style={{ marginTop: 24 }}>
